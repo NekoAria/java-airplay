@@ -1,0 +1,55 @@
+package wtf.nanoka.airplay.player.gstreamer;
+
+import org.freedesktop.gstreamer.ElementFactory;
+import org.freedesktop.gstreamer.Gst;
+import org.freedesktop.gstreamer.Pipeline;
+import org.freedesktop.gstreamer.Version;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class GstGpuAdapterPipelineTest {
+
+    @Test
+    void usesDecoderFactoryRegisteredForSelectedDxgiAdapter() {
+        try {
+            GstPlayerUtils.configurePaths();
+            Gst.init(Version.of(1, 10), "GpuAdapterPipelineTest");
+        } catch (Throwable error) {
+            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
+        }
+
+        List<GpuAdapter> capableAdapters = GpuAdapterScanner.scan().stream()
+                .filter(GpuAdapter::isHardware)
+                .filter(adapter -> ElementFactory.find(GstPlayerDefault.d3dDecoderForAdapter("d3d12", adapter.index())) != null)
+                .toList();
+        Assumptions.assumeFalse(capableAdapters.isEmpty(), "No D3D12 H.264 decoder adapters found");
+
+        GpuAdapter selected = capableAdapters.size() > 1 ? capableAdapters.get(1) : capableAdapters.get(0);
+        String decoderName = GstPlayerDefault.d3dDecoderForAdapter("d3d12", selected.index());
+        String configuredPipeline = GstPlayerDefault.createPipelineDescription(
+                "d3d12h264dec", Integer.toString(selected.index()));
+        assertTrue(configuredPipeline.contains("! " + decoderName + " !"));
+        assertTrue(configuredPipeline.contains("d3d12videosink adapter=" + selected.index()));
+
+        String testPipeline = "videotestsrc num-buffers=10 "
+                + "! video/x-raw,width=640,height=360,framerate=30/1 "
+                + "! x264enc tune=zerolatency "
+                + "! h264parse ! " + decoderName + " name=decoder ! fakesink sync=false";
+        try (Pipeline pipeline = (Pipeline) Gst.parseLaunch(testPipeline)) {
+            try {
+                pipeline.play();
+                pipeline.getState(10, TimeUnit.SECONDS);
+                Number adapterLuid = (Number) pipeline.getElementByName("decoder").get("adapter-luid");
+                assertEquals(selected.adapterLuid(), adapterLuid.longValue());
+            } finally {
+                pipeline.stop();
+            }
+        }
+    }
+}

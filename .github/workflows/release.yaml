@@ -7,26 +7,27 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-java@v3
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
-          java-version: 17
+          java-version: 25
           distribution: zulu
-      - uses: gradle/gradle-build-action@v2
-        with:
-          gradle-version: 7.6
-          arguments: bootJar
+      - uses: gradle/actions/setup-gradle@v6
+      - id: version
+        shell: pwsh
+        run: |
+          "value=$($env:GITHUB_REF_NAME -replace '^v', '')" >> $env:GITHUB_OUTPUT
+      - run: .\gradlew.bat release -Pversion=${{ steps.version.outputs.value }}
 
-      - run: echo "tag=${REF##*/v}" >> $GITHUB_ENV
-
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v3
         env:
-          token: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ env.tag }}
-          name: ${{ env.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           draft: false
-          files: player/app/build/libs/*
+          files: |
+            release/*.zip
+            release/*.sha256

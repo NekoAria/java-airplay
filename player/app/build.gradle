@@ -1,6 +1,6 @@
 plugins {
-    id 'org.springframework.boot' version "$springBootVersion"
-    id 'io.spring.dependency-management' version "$springDepMgmtVersion"
+    id 'org.springframework.boot' version '4.0.7'
+    id 'io.spring.dependency-management' version '1.1.7'
 }
 
 dependencies {
@@ -12,11 +12,16 @@ dependencies {
 
     implementation 'org.springframework.boot:spring-boot-starter'
 
-    implementation 'com.dorkbox:SystemTray:4.1'
-
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 }
 
 bootJar {
     archiveBaseName.set('java-airplay-server')
+    manifest {
+        attributes('Enable-Native-Access': 'ALL-UNNAMED')
+    }
+}
+
+bootRun {
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
 }

@@ -3,55 +3,103 @@
     {
       "name": "airplay.serverName",
       "type": "java.lang.String",
-      "description": "Name of airplay server."
+      "defaultValue": "Java AirPlay",
+      "description": "Receiver name shown in the iPhone Screen Mirroring list."
     },
     {
       "name": "airplay.width",
       "type": "java.lang.String",
-      "description": "Airplay video width."
+      "defaultValue": "1920",
+      "description": "Maximum advertised width, or auto to detect the sender video stream after setup."
     },
     {
       "name": "airplay.height",
       "type": "java.lang.String",
-      "description": "Airplay video height."
+      "defaultValue": "1080",
+      "description": "Maximum advertised height, or auto to detect the sender video stream after setup."
     },
     {
       "name": "airplay.fps",
       "type": "java.lang.String",
-      "description": "Airplay max fps."
+      "defaultValue": "60",
+      "description": "Maximum advertised frame rate, or auto to detect the sender video timestamps after setup."
+    },
+    {
+      "name": "airplay.identityFile",
+      "type": "java.lang.String",
+      "description": "Persistent receiver identity seed file."
+    },
+    {
+      "name": "airplay.audioJitterPackets",
+      "type": "java.lang.Integer",
+      "defaultValue": 3,
+      "description": "Audio packet reorder window from 1 to 64."
+    },
+    {
+      "name": "airplay.requirePairing",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "description": "Require Pair-Verify before accepting media setup."
     },
     {
       "name": "player.implementation",
       "type": "java.lang.String",
-      "description": "Player implementation: gstreamer or h264-dump etc."
+      "defaultValue": "gstreamer",
+      "description": "Player implementation."
     },
     {
       "name": "player.tray.enabled",
       "type": "java.lang.Boolean",
-      "description": "Enables system tray menu."
+      "defaultValue": true,
+      "description": "Enable the system tray menu."
     },
     {
       "name": "player.gstreamer.swing",
       "type": "java.lang.Boolean",
-      "description": "Use swing window instead of GStreamer's default."
+      "defaultValue": false,
+      "description": "Use a Swing video component instead of the native GStreamer video sink."
+    },
+    {
+      "name": "player.gstreamer.videoDecoder",
+      "type": "java.lang.String",
+      "defaultValue": "auto",
+      "description": "GStreamer H.264 decoder element or auto."
+    },
+    {
+      "name": "player.gstreamer.gpuAdapter",
+      "type": "java.lang.String",
+      "defaultValue": "auto",
+      "description": "DXGI adapter index for matching per-device D3D11/D3D12 decoder and sink elements, or auto to enumerate and select a capable hardware adapter."
+    },
+    {
+      "name": "player.gstreamer.videoQueueDepth",
+      "type": "java.lang.Integer",
+      "defaultValue": 2,
+      "description": "Maximum decrypted video access units queued, from 1 to 16."
     }
   ],
   "hints": [
     {
       "name": "player.implementation",
       "values": [
-        {
-          "value": "gstreamer"
-        },
-        {
-          "value": "vlc"
-        },
-        {
-          "value": "h264-dump"
-        },
-        {
-          "value": "ffmpeg"
-        }
+        { "value": "gstreamer" },
+        { "value": "vlc" },
+        { "value": "h264-dump" },
+        { "value": "ffmpeg" }
+      ]
+    },
+    {
+      "name": "player.gstreamer.videoDecoder",
+      "values": [
+        { "value": "auto" },
+        { "value": "d3d12h264dec" },
+        { "value": "d3d11h264dec" },
+        { "value": "nvh264dec" },
+        { "value": "vulkanh264dec" },
+        { "value": "avdec_h264" },
+        { "value": "vah264dec" },
+        { "value": "v4l2h264dec" },
+        { "value": "vtdec_hw" }
       ]
     }
   ]

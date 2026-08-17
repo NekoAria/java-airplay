@@ -1,0 +1,88 @@
+package wtf.nanoka.airplay.app.config;
+
+import wtf.nanoka.airplay.server.AirPlayConfig;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Properties;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class ConfigurationBindingTest {
+
+    @Test
+    void bindsEveryAirPlayAndPlayerPropertyFromPackagedConfiguration() throws Exception {
+        Properties properties = new Properties();
+        try (var input = getClass().getResourceAsStream("/application.properties")) {
+            properties.load(input);
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        properties.forEach((key, value) -> values.put(key.toString(), value));
+        Binder binder = new Binder(new MapConfigurationPropertySource(values));
+
+        AirPlayConfig airPlay = binder.bind("airplay", Bindable.of(AirPlayConfig.class))
+                .orElseThrow(() -> new IllegalStateException("AirPlay properties were not bound"));
+        PlayerProperties player = binder.bind("player", Bindable.of(PlayerProperties.class))
+                .orElseThrow(() -> new IllegalStateException("Player properties were not bound"));
+
+        assertEquals("Java AirPlay", airPlay.getServerName());
+        assertEquals("1920", airPlay.getWidth());
+        assertEquals("1080", airPlay.getHeight());
+        assertEquals("60", airPlay.getFps());
+        assertEquals(1920, airPlay.getResolvedWidth());
+        assertEquals(1080, airPlay.getResolvedHeight());
+        assertEquals(60, airPlay.getResolvedFps());
+        assertTrue(airPlay.getIdentityFile().contains("identity.key"));
+        assertEquals(3, airPlay.getAudioJitterPackets());
+        assertTrue(airPlay.isRequirePairing());
+
+        assertEquals("gstreamer", player.getImplementation());
+        assertTrue(player.getTray().isEnabled());
+        assertFalse(player.getGstreamer().isSwing());
+        assertEquals("auto", player.getGstreamer().getVideoDecoder());
+        assertEquals("auto", player.getGstreamer().getGpuAdapter());
+        assertEquals(2, player.getGstreamer().getVideoQueueDepth());
+
+        airPlay.validate();
+        player.validate();
+    }
+
+    @Test
+    void acceptsAutoDisplayCapabilities() {
+        var airPlay = new AirPlayConfig();
+        airPlay.setWidth("auto");
+        airPlay.setHeight("auto");
+        airPlay.setFps("auto");
+
+        airPlay.validate();
+
+        assertTrue(airPlay.getResolvedWidth() >= 320);
+        assertTrue(airPlay.getResolvedHeight() >= 240);
+        assertTrue(airPlay.getResolvedFps() >= 1);
+    }
+
+    @Test
+    void acceptsAnyNonNegativeGpuAdapterIndex() {
+        var player = new PlayerProperties();
+        player.getGstreamer().setGpuAdapter("4");
+
+        player.validate();
+    }
+
+    @Test
+    void rejectsInvalidGpuAdapterIndex() {
+        var player = new PlayerProperties();
+        player.getGstreamer().setGpuAdapter("-1");
+        assertThrows(IllegalArgumentException.class, player::validate);
+
+        player.getGstreamer().setGpuAdapter("not-a-number");
+        assertThrows(IllegalArgumentException.class, player::validate);
+    }
+}

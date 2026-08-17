@@ -5,17 +5,17 @@ plugins {
 dependencies {
     implementation project(':lib')
 
-    implementation "org.jmdns:jmdns:$jmdnsVersion"
-    implementation "io.netty:netty-all:$nettyVersion"
-    implementation "net.i2p.crypto:eddsa:$eddsaVersion"
-    implementation "org.whispersystems:curve25519-java:$curve25519Version"
+    implementation "org.jmdns:jmdns:${rootProject.ext.jmdnsVersion}"
+    implementation "io.netty:netty-all:${rootProject.ext.nettyVersion}"
+    implementation "net.i2p.crypto:eddsa:${rootProject.ext.eddsaVersion}"
+    implementation "org.whispersystems:curve25519-java:${rootProject.ext.curve25519Version}"
 
-    implementation "net.java.dev.jna:jna:$jnaVersion"
-    implementation "net.java.dev.jna:jna-platform:$jnaVersion"
+    implementation "net.java.dev.jna:jna:${rootProject.ext.jnaVersion}"
+    implementation "net.java.dev.jna:jna-platform:${rootProject.ext.jnaVersion}"
 
-    implementation "org.freedesktop.gstreamer:gst1-java-core:$gstreamerCoreVersion"
-    implementation "org.freedesktop.gstreamer:gst1-java-swing:$gstreamerSwingVersion"
+    implementation "org.freedesktop.gstreamer:gst1-java-core:${rootProject.ext.gstreamerCoreVersion}"
+    implementation "org.freedesktop.gstreamer:gst1-java-swing:${rootProject.ext.gstreamerSwingVersion}"
 
-    implementation "ch.qos.logback:logback-core:$logbackVersion"
-    implementation "ch.qos.logback:logback-classic:$logbackVersion"
+    implementation "ch.qos.logback:logback-core:${rootProject.ext.logbackVersion}"
+    implementation "ch.qos.logback:logback-classic:${rootProject.ext.logbackVersion}"
 }
