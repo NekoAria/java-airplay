@@ -4,47 +4,163 @@ import wtf.nanoka.airplay.lib.AirPlay;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 import wtf.nanoka.airplay.server.AirPlayConsumer;
 import wtf.nanoka.airplay.server.internal.packet.VideoPacket;
-import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+
 @Slf4j
-@RequiredArgsConstructor
-@ChannelHandler.Sharable
 public class VideoHandler extends ChannelInboundHandlerAdapter {
 
     private final AirPlay airPlay;
     private final AirPlayConsumer dataConsumer;
+    private final ExecutorService callbackExecutor;
+    private final VideoDecryptor videoDecryptor;
     private VideoStreamInfo detectedFormat;
+    private VideoStreamInfo.Codec codec = VideoStreamInfo.Codec.UNKNOWN;
+    private byte[] pendingParameterSets;
     private long firstVideoTimestamp = Long.MIN_VALUE;
     private long lastVideoTimestamp = Long.MIN_VALUE;
     private int measuredFrames;
+    private boolean callbackPending;
+
+    @FunctionalInterface
+    public interface VideoDecryptor {
+        boolean decrypt(byte[] payload) throws Exception;
+    }
+
+    public VideoHandler(AirPlay airPlay, AirPlayConsumer dataConsumer) {
+        this(airPlay, dataConsumer, false, payload -> {
+            airPlay.decryptVideo(payload);
+            return true;
+        });
+    }
+
+    public VideoHandler(AirPlay airPlay, AirPlayConsumer dataConsumer, boolean asynchronous) {
+        this(airPlay, dataConsumer, asynchronous, payload -> {
+            airPlay.decryptVideo(payload);
+            return true;
+        });
+    }
+
+    public VideoHandler(AirPlay airPlay, AirPlayConsumer dataConsumer, boolean asynchronous,
+                        VideoDecryptor videoDecryptor) {
+        this.airPlay = airPlay;
+        this.dataConsumer = dataConsumer;
+        this.videoDecryptor = videoDecryptor;
+        callbackExecutor = asynchronous
+                ? Executors.newSingleThreadExecutor(
+                Thread.ofPlatform().daemon(true).name("airplay-video-dispatch").factory())
+                : null;
+    }
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        if (callbackExecutor != null) {
+            ctx.read();
+        }
+        super.channelActive(ctx);
+    }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         VideoPacket packet = (VideoPacket) msg;
         try {
             if (packet.getPayloadType() == 0) {
-                airPlay.decryptVideo(packet.getPayload());
-                preparePictureNALUnits(packet.getPayload());
-                updateMeasuredFps(packet.getTimestamp());
-                dataConsumer.onVideo(packet.getPayload(), packet.getTimestamp());
-            } else if (packet.getPayloadType() == 1) {
-                byte[] spsPps = prepareSpsPpsNALUnits(packet.getPayload());
-                var format = H264SpsParser.parse(extractSps(packet.getPayload()));
-                if (format != null) {
-                    detectedFormat = new VideoStreamInfo(
-                            airPlay.getStreamConnectionID(), format.width(), format.height(), format.fps());
-                    dataConsumer.onVideoFormatDetected(detectedFormat);
-                    log.info("Detected sender video capability: {}x{}", format.width(), format.height());
+                if (!videoDecryptor.decrypt(packet.getPayload())) {
+                    if (ctx != null) {
+                        ctx.close();
+                    }
+                    return;
                 }
-                dataConsumer.onVideo(spsPps, packet.getTimestamp());
+                preparePictureNALUnits(packet.getPayload());
+                VideoStreamInfo measuredFormat = updateMeasuredFps(packet.getTimestamp());
+                byte[] accessUnit = packet.getPayload();
+                if (pendingParameterSets != null) {
+                    accessUnit = concatenate(pendingParameterSets, accessUnit);
+                    pendingParameterSets = null;
+                }
+                byte[] finalAccessUnit = accessUnit;
+                dispatch(ctx, () -> {
+                    if (measuredFormat != null) {
+                        dataConsumer.onVideoFormatDetected(measuredFormat);
+                    }
+                    dataConsumer.onVideo(finalAccessUnit, packet.getTimestamp());
+                });
+            } else if (packet.getPayloadType() == 1) {
+                VideoCodecConfiguration configuration = VideoCodecConfiguration.parse(packet.getPayload());
+                if (codec != VideoStreamInfo.Codec.UNKNOWN && codec != configuration.codec()) {
+                    throw new IllegalArgumentException("Video codec changed within one mirroring connection");
+                }
+                codec = configuration.codec();
+                pendingParameterSets = configuration.parameterSets();
+                detectedFormat = detectedFormat(configuration);
+                VideoStreamInfo configuredFormat = detectedFormat;
+                dispatch(ctx, () -> dataConsumer.onVideoFormatDetected(configuredFormat));
+                log.info("Detected sender video format: {} {}x{}", codec,
+                        detectedFormat.getWidth(), detectedFormat.getHeight());
             }
         } catch (Exception e) {
             log.error(e.getMessage(), e);
+            if (ctx != null) {
+                ctx.close();
+            }
         }
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        if (callbackExecutor != null) {
+            callbackExecutor.shutdownNow();
+        }
+        dataConsumer.onVideoSrcDisconnect();
+        super.channelInactive(ctx);
+    }
+
+    @Override
+    public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
+        if (callbackExecutor != null && !callbackPending && ctx.channel().isActive()) {
+            ctx.read();
+        }
+        super.channelReadComplete(ctx);
+    }
+
+    private void dispatch(ChannelHandlerContext ctx, Runnable callback) {
+        if (callbackExecutor == null) {
+            callback.run();
+            return;
+        }
+        callbackPending = true;
+        try {
+            callbackExecutor.execute(() -> {
+                boolean success = false;
+                try {
+                    callback.run();
+                    success = true;
+                } catch (Throwable error) {
+                    log.warn("Video consumer callback failed: {}", error.getMessage(), error);
+                } finally {
+                    completeDispatch(ctx, success);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            callbackPending = false;
+            ctx.close();
+        }
+    }
+
+    private void completeDispatch(ChannelHandlerContext ctx, boolean success) {
+        ctx.executor().execute(() -> {
+            callbackPending = false;
+            if (!success) {
+                ctx.close();
+            } else if (ctx.channel().isActive()) {
+                ctx.read();
+            }
+        });
     }
 
     private void preparePictureNALUnits(byte[] payload) {
@@ -72,90 +188,52 @@ public class VideoHandler extends ChannelInboundHandlerAdapter {
         }
     }
 
-    private byte[] prepareSpsPpsNALUnits(byte[] payload) {
-        if (payload.length < 11) {
-            throw new IllegalArgumentException("Video codec configuration is too short");
+    private VideoStreamInfo detectedFormat(VideoCodecConfiguration configuration) {
+        int width = 0;
+        int height = 0;
+        if (configuration.codec() == VideoStreamInfo.Codec.H264) {
+            var format = H264SpsParser.parse(configuration.sequenceParameterSet());
+            if (format != null) {
+                width = format.width();
+                height = format.height();
+            }
+        } else {
+            var format = H265SpsParser.parse(configuration.sequenceParameterSet());
+            if (format != null) {
+                width = format.width();
+                height = format.height();
+            }
         }
-        int offset = 6;
-        int spsLen = readUnsignedShort(payload, offset);
-        offset += 2;
-        if (spsLen == 0 || spsLen > payload.length - offset) {
-            throw new IllegalArgumentException("Invalid SPS length: " + spsLen);
-        }
-        byte[] sequenceParameterSet = new byte[spsLen];
-        System.arraycopy(payload, offset, sequenceParameterSet, 0, spsLen);
-        offset += spsLen;
-        if (payload.length - offset < 3) {
-            throw new IllegalArgumentException("Video codec configuration has no PPS");
-        }
-        offset++; // pps count
-        int ppsLen = readUnsignedShort(payload, offset);
-        offset += 2;
-        if (ppsLen == 0 || ppsLen > payload.length - offset) {
-            throw new IllegalArgumentException("Invalid PPS length: " + ppsLen);
-        }
-        byte[] pictureParameterSet = new byte[ppsLen];
-        System.arraycopy(payload, offset, pictureParameterSet, 0, ppsLen);
-
-        int spsPpsLen = spsLen + ppsLen + 8;
-        log.info("SPS PPS length: {}", spsPpsLen);
-        byte[] spsPps = new byte[spsPpsLen];
-        spsPps[0] = 0;
-        spsPps[1] = 0;
-        spsPps[2] = 0;
-        spsPps[3] = 1;
-        System.arraycopy(sequenceParameterSet, 0, spsPps, 4, spsLen);
-        spsPps[spsLen + 4] = 0;
-        spsPps[spsLen + 5] = 0;
-        spsPps[spsLen + 6] = 0;
-        spsPps[spsLen + 7] = 1;
-        System.arraycopy(pictureParameterSet, 0, spsPps, 8 + spsLen, ppsLen);
-
-        return spsPps;
+        return new VideoStreamInfo(airPlay.getStreamConnectionID(), width, height, 0, configuration.codec());
     }
 
-    private byte[] extractSps(byte[] payload) {
-        if (payload.length < 8) {
-            throw new IllegalArgumentException("Video codec configuration is too short");
-        }
-        int offset = 6;
-        int spsLength = readUnsignedShort(payload, offset);
-        offset += 2;
-        if (spsLength <= 0 || spsLength > payload.length - offset) {
-            throw new IllegalArgumentException("Invalid SPS length: " + spsLength);
-        }
-        byte[] sps = new byte[spsLength];
-        System.arraycopy(payload, offset, sps, 0, spsLength);
-        return sps;
-    }
-
-    private void updateMeasuredFps(long timestamp) {
+    private VideoStreamInfo updateMeasuredFps(long timestamp) {
         if (detectedFormat == null) {
-            return;
+            return null;
         }
         if (firstVideoTimestamp == Long.MIN_VALUE) {
             firstVideoTimestamp = timestamp;
             lastVideoTimestamp = timestamp;
-            return;
+            return null;
         }
         double frameSeconds = fixedPointDeltaSeconds(lastVideoTimestamp, timestamp);
         lastVideoTimestamp = timestamp;
         if (frameSeconds <= 0 || frameSeconds > 1) {
-            return;
+            return null;
         }
         measuredFrames++;
         if (measuredFrames < 10 || measuredFrames % 10 != 0) {
-            return;
+            return null;
         }
         double elapsedSeconds = fixedPointDeltaSeconds(firstVideoTimestamp, timestamp);
         if (elapsedSeconds <= 0) {
-            return;
+            return null;
         }
         double measuredFps = measuredFrames / elapsedSeconds;
         detectedFormat = new VideoStreamInfo(detectedFormat.getStreamConnectionId(),
-                detectedFormat.getWidth(), detectedFormat.getHeight(), measuredFps);
-        dataConsumer.onVideoFormatDetected(detectedFormat);
+                detectedFormat.getWidth(), detectedFormat.getHeight(), measuredFps, detectedFormat.getCodec());
         log.info("Measured sender video frame rate: {} fps", String.format("%.2f", measuredFps));
+        return detectedFormat;
     }
 
     private double fixedPointDeltaSeconds(long first, long current) {
@@ -170,7 +248,10 @@ public class VideoHandler extends ChannelInboundHandlerAdapter {
                 | (bytes[offset + 3] & 0xff);
     }
 
-    private int readUnsignedShort(byte[] bytes, int offset) {
-        return ((bytes[offset] & 0xff) << 8) | (bytes[offset + 1] & 0xff);
+    private byte[] concatenate(byte[] first, byte[] second) {
+        byte[] combined = new byte[first.length + second.length];
+        System.arraycopy(first, 0, combined, 0, first.length);
+        System.arraycopy(second, 0, combined, first.length, second.length);
+        return combined;
     }
 }

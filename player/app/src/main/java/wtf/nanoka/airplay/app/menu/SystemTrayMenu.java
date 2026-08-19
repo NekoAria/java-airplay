@@ -17,13 +17,23 @@ public class SystemTrayMenu {
 
     private TrayIcon trayIcon;
 
-    public SystemTrayMenu(ApplicationContext context) {
+    public SystemTrayMenu(ApplicationContext context, Runnable showWindow, Runnable trayReady,
+                          Runnable trayUnavailable) {
         if (!SystemTray.isSupported()) {
             log.warn("System tray is not supported in this desktop session");
+            if (trayUnavailable != null) {
+                trayUnavailable.run();
+            }
             return;
         }
 
         var popup = new PopupMenu();
+        if (showWindow != null) {
+            var open = new MenuItem("Open Java AirPlay");
+            open.addActionListener(event -> showWindow.run());
+            popup.add(open);
+            popup.addSeparator();
+        }
         var quit = new MenuItem("Quit");
         quit.addActionListener(event -> {
             close();
@@ -35,10 +45,22 @@ public class SystemTrayMenu {
         var imageUrl = Objects.requireNonNull(getClass().getResource("/menu/tray_icon.png"));
         trayIcon = new TrayIcon(Toolkit.getDefaultToolkit().getImage(imageUrl), "Java AirPlay", popup);
         trayIcon.setImageAutoSize(true);
+        if (showWindow != null) {
+            trayIcon.addActionListener(event -> showWindow.run());
+        }
         try {
             SystemTray.getSystemTray().add(trayIcon);
+            if (trayReady != null) {
+                trayReady.run();
+            }
         } catch (Exception e) {
+            if (trayIcon != null) {
+                SystemTray.getSystemTray().remove(trayIcon);
+            }
             trayIcon = null;
+            if (trayUnavailable != null) {
+                trayUnavailable.run();
+            }
             log.warn("Unable to install system tray icon: {}", e.getMessage());
         }
     }

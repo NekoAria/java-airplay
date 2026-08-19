@@ -5,6 +5,5 @@ dependencies {
     implementation "net.java.dev.jna:jna:${rootProject.ext.jnaVersion}"
     implementation "net.java.dev.jna:jna-platform:${rootProject.ext.jnaVersion}"
     implementation "org.freedesktop.gstreamer:gst1-java-core:${rootProject.ext.gstreamerCoreVersion}"
-    implementation "org.freedesktop.gstreamer:gst1-java-swing:${rootProject.ext.gstreamerSwingVersion}"
     implementation 'com.formdev:flatlaf:3.0'
 }

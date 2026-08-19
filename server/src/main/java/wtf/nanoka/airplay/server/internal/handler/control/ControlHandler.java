@@ -241,8 +241,8 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
                     response.content().writeBytes(setup);
                 }
                 case VIDEO -> {
-                    airPlayConsumer.onVideoFormat((VideoStreamInfo) mediaStreamInfo.get());
                     session.getVideoServer().start(airPlayConsumer);
+                    session.getVideoServer().onVideoFormat((VideoStreamInfo) mediaStreamInfo.get());
                     var setup = PropertyListUtil.prepareSetupVideoResponse(session.getVideoServer().getPort());
                     response.content().writeBytes(setup);
                 }
@@ -298,13 +298,11 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
                     session.getAudioControlServer().stop();
                 }
                 case VIDEO -> {
-                    airPlayConsumer.onVideoSrcDisconnect();
                     session.getVideoServer().stop();
                 }
             }
         } else {
             airPlayConsumer.onAudioSrcDisconnect();
-            airPlayConsumer.onVideoSrcDisconnect();
             session.getAudioServer().stop();
             session.getAudioControlServer().stop();
             session.getVideoServer().stop();

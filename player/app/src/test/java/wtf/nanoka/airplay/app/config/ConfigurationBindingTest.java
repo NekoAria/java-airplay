@@ -11,7 +11,6 @@ import java.util.Map;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,13 +41,15 @@ class ConfigurationBindingTest {
         assertTrue(airPlay.getIdentityFile().contains("identity.key"));
         assertEquals(3, airPlay.getAudioJitterPackets());
         assertTrue(airPlay.isRequirePairing());
+        assertEquals(false, airPlay.isHevc());
 
         assertEquals("gstreamer", player.getImplementation());
         assertTrue(player.getTray().isEnabled());
-        assertFalse(player.getGstreamer().isSwing());
+        assertTrue(player.getGstreamer().isSwing());
         assertEquals("auto", player.getGstreamer().getVideoDecoder());
         assertEquals("auto", player.getGstreamer().getGpuAdapter());
         assertEquals(2, player.getGstreamer().getVideoQueueDepth());
+        assertEquals("balanced", player.getGstreamer().getRenderMode());
 
         airPlay.validate();
         player.validate();
@@ -84,5 +85,13 @@ class ConfigurationBindingTest {
 
         player.getGstreamer().setGpuAdapter("not-a-number");
         assertThrows(IllegalArgumentException.class, player::validate);
+    }
+
+    @Test
+    void rejectsReceiverNamesThatCannotFitInOneDnsLabel() {
+        var airPlay = new AirPlayConfig();
+        airPlay.setServerName("x".repeat(64));
+
+        assertThrows(IllegalArgumentException.class, airPlay::validate);
     }
 }

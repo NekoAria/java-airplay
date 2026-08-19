@@ -5,6 +5,7 @@ import com.dd.plist.NSArray;
 import com.dd.plist.NSData;
 import com.dd.plist.NSDictionary;
 import wtf.nanoka.airplay.lib.AirPlayIdentity;
+import wtf.nanoka.airplay.lib.AirPlayFeatures;
 import wtf.nanoka.airplay.server.AirPlayConfig;
 import wtf.nanoka.airplay.server.AirPlayConsumer;
 import lombok.extern.slf4j.Slf4j;
@@ -21,7 +22,7 @@ public class PropertyListUtil {
                                              boolean txtAirPlayOnly) throws Exception {
         if (txtAirPlayOnly) {
             NSDictionary response = new NSDictionary();
-            response.put("txtAirPlay", new NSData(encodeTxtRecord(identity)));
+            response.put("txtAirPlay", new NSData(encodeTxtRecord(identity, airPlayConfig.isHevc())));
             return BinaryPropertyListWriter.writeToArray(response);
         }
 
@@ -70,7 +71,7 @@ public class PropertyListUtil {
         response.put("audioLatencies", audioLatencies);
         response.put("deviceID", identity.getDeviceId());
         response.put("displays", displays);
-        response.put("features", 130367356919L);
+        response.put("features", AirPlayFeatures.receiverMask(airPlayConfig.isHevc()));
         response.put("initialVolume", 0.0);
         response.put("keepAliveSendStatsAsBody", 1);
         response.put("macAddress", identity.getDeviceId());
@@ -86,10 +87,10 @@ public class PropertyListUtil {
         return BinaryPropertyListWriter.writeToArray(response);
     }
 
-    private static byte[] encodeTxtRecord(AirPlayIdentity identity) {
+    private static byte[] encodeTxtRecord(AirPlayIdentity identity, boolean hevcEnabled) {
         Map<String, String> properties = new LinkedHashMap<>();
         properties.put("deviceid", identity.getDeviceId());
-        properties.put("features", "0x5A7FFFF7,0x1E");
+        properties.put("features", AirPlayFeatures.txtValue(hevcEnabled));
         properties.put("srcvers", "220.68");
         properties.put("flags", "0x44");
         properties.put("vv", "2");

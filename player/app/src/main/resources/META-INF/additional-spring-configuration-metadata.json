@@ -42,6 +42,12 @@
       "description": "Require Pair-Verify before accepting media setup."
     },
     {
+      "name": "airplay.hevc",
+      "type": "java.lang.Boolean",
+      "defaultValue": false,
+      "description": "Advertise and receive experimental HEVC screen mirroring. Requires the GStreamer player."
+    },
+    {
       "name": "player.implementation",
       "type": "java.lang.String",
       "defaultValue": "gstreamer",
@@ -56,14 +62,14 @@
     {
       "name": "player.gstreamer.swing",
       "type": "java.lang.Boolean",
-      "defaultValue": false,
-      "description": "Use a Swing video component instead of the native GStreamer video sink."
+      "defaultValue": true,
+      "description": "Show the integrated desktop UI while keeping the native GStreamer video sink."
     },
     {
       "name": "player.gstreamer.videoDecoder",
       "type": "java.lang.String",
       "defaultValue": "auto",
-      "description": "GStreamer H.264 decoder element or auto."
+      "description": "GStreamer H.264 decoder element or auto. The matching H.265 element is derived when HEVC is enabled."
     },
     {
       "name": "player.gstreamer.gpuAdapter",
@@ -75,7 +81,13 @@
       "name": "player.gstreamer.videoQueueDepth",
       "type": "java.lang.Integer",
       "defaultValue": 2,
-      "description": "Maximum decrypted video access units queued, from 1 to 16."
+      "description": "Bounded decrypted access-unit input queue with backpressure, from 1 to 16."
+    },
+    {
+      "name": "player.gstreamer.renderMode",
+      "type": "java.lang.String",
+      "defaultValue": "balanced",
+      "description": "Video presentation policy: balanced, quality, or low-latency."
     }
   ],
   "hints": [
@@ -100,6 +112,14 @@
         { "value": "vah264dec" },
         { "value": "v4l2h264dec" },
         { "value": "vtdec_hw" }
+      ]
+    },
+    {
+      "name": "player.gstreamer.renderMode",
+      "values": [
+        { "value": "balanced" },
+        { "value": "quality" },
+        { "value": "low-latency" }
       ]
     }
   ]

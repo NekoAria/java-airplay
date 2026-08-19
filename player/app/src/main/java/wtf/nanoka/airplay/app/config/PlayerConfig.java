@@ -4,6 +4,8 @@ import wtf.nanoka.airplay.app.menu.SystemTrayMenu;
 import wtf.nanoka.airplay.player.ffmpeg.FFmpegPlayer;
 import wtf.nanoka.airplay.player.gstreamer.GstPlayerDefault;
 import wtf.nanoka.airplay.player.gstreamer.GstPlayerSwing;
+import wtf.nanoka.airplay.player.gstreamer.ui.ReceiverSettings;
+import wtf.nanoka.airplay.player.gstreamer.ui.SettingsController;
 import wtf.nanoka.airplay.player.h264dump.H264Dump;
 import wtf.nanoka.airplay.player.vlc.VlcPlayer;
 import wtf.nanoka.airplay.server.AirPlayConfig;
@@ -23,29 +25,48 @@ public class PlayerConfig {
     @Bean
     @ConditionalOnProperty(value = "player.implementation", havingValue = "gstreamer")
     public AirPlayConsumer gstreamer(AirPlayConfig airPlayConfig,
-                                     PlayerProperties playerProperties) {
+                                     PlayerProperties playerProperties,
+                                     SettingsController settingsController) {
         playerProperties.validate();
         var gstreamer = playerProperties.getGstreamer();
-        return gstreamer.isSwing() ? new GstPlayerSwing()
+        return gstreamer.isSwing() ? new GstPlayerSwing(
+                airPlayConfig.getResolvedFps(),
+                gstreamer.getVideoQueueDepth(),
+                gstreamer.getVideoDecoder(),
+                gstreamer.getGpuAdapter(),
+                gstreamer.getRenderMode(),
+                airPlayConfig.isHevc(),
+                new GstPlayerSwing.WindowOptions(
+                        airPlayConfig.getServerName(),
+                        airPlayConfig.getResolvedWidth(),
+                        airPlayConfig.getResolvedHeight(),
+                        airPlayConfig.isRequirePairing(),
+                        playerProperties.getTray().isEnabled(),
+                        receiverSettings(airPlayConfig, playerProperties),
+                        settingsController))
                 : new GstPlayerDefault(airPlayConfig.getResolvedFps(), gstreamer.getVideoQueueDepth(),
-                gstreamer.getVideoDecoder(), gstreamer.getGpuAdapter());
+                gstreamer.getVideoDecoder(), gstreamer.getGpuAdapter(), gstreamer.getRenderMode(),
+                airPlayConfig.isHevc());
     }
 
     @Bean
     @ConditionalOnProperty(value = "player.implementation", havingValue = "h264-dump", matchIfMissing = true)
-    public AirPlayConsumer h264dump() throws Exception {
+    public AirPlayConsumer h264dump(AirPlayConfig airPlayConfig) throws Exception {
+        requireH264Only(airPlayConfig, "h264-dump");
         return new H264Dump();
     }
 
     @Bean
     @ConditionalOnProperty(value = "player.implementation", havingValue = "vlc")
-    public AirPlayConsumer vlc() {
+    public AirPlayConsumer vlc(AirPlayConfig airPlayConfig) {
+        requireH264Only(airPlayConfig, "VLC");
         return new VlcPlayer();
     }
 
     @Bean
     @ConditionalOnProperty(value = "player.implementation", havingValue = "ffmpeg")
-    public AirPlayConsumer ffmpeg() {
+    public AirPlayConsumer ffmpeg(AirPlayConfig airPlayConfig) {
+        requireH264Only(airPlayConfig, "FFmpeg");
         return new FFmpegPlayer();
     }
 
@@ -56,14 +77,52 @@ public class PlayerConfig {
     }
 
     @Bean
-    @ConditionalOnProperty(value = "player.tray.enabled", havingValue = "true")
-    public SystemTrayMenu systemTrayMenu(ApplicationContext context) {
-        return new SystemTrayMenu(context);
+    public SettingsController settingsController(ApplicationContext context) {
+        return new UserSettingsController(context);
+    }
+
+    @Bean
+    @ConditionalOnProperty(value = "player.tray.enabled", havingValue = "true", matchIfMissing = true)
+    public SystemTrayMenu systemTrayMenu(ApplicationContext context, AirPlayConsumer airPlayConsumer) {
+        Runnable showWindow = airPlayConsumer instanceof GstPlayerSwing swing ? swing::showWindow : null;
+        Runnable trayReady = airPlayConsumer instanceof GstPlayerSwing swing
+                ? () -> swing.setCloseToTray(true)
+                : null;
+        Runnable trayUnavailable = airPlayConsumer instanceof GstPlayerSwing swing
+                ? () -> swing.setCloseToTray(false)
+                : null;
+        return new SystemTrayMenu(context, showWindow, trayReady, trayUnavailable);
     }
 
     @Bean
     public AirPlayServer airPlayServer(AirPlayConfig airPlayConfig,
                                        AirPlayConsumer airPlayConsumer) {
         return new AirPlayServer(airPlayConfig, airPlayConsumer);
+    }
+
+    private ReceiverSettings receiverSettings(AirPlayConfig airPlayConfig, PlayerProperties playerProperties) {
+        var gstreamer = playerProperties.getGstreamer();
+        return new ReceiverSettings(
+                airPlayConfig.getServerName(),
+                airPlayConfig.getWidth(),
+                airPlayConfig.getHeight(),
+                airPlayConfig.getFps(),
+                airPlayConfig.getIdentityFile(),
+                airPlayConfig.getAudioJitterPackets(),
+                airPlayConfig.isRequirePairing(),
+                airPlayConfig.isHevc(),
+                playerProperties.getImplementation(),
+                playerProperties.getTray().isEnabled(),
+                gstreamer.isSwing(),
+                gstreamer.getVideoDecoder(),
+                gstreamer.getGpuAdapter(),
+                gstreamer.getVideoQueueDepth(),
+                gstreamer.getRenderMode());
+    }
+
+    private void requireH264Only(AirPlayConfig airPlayConfig, String player) {
+        if (airPlayConfig.isHevc()) {
+            throw new IllegalArgumentException(player + " player does not support AirPlay HEVC reception");
+        }
     }
 }

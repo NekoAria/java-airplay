@@ -28,53 +28,80 @@ public class AirPlayBonjour {
 
     private final String serverName;
     private final AirPlayIdentity identity;
+    private final boolean hevcEnabled;
 
     private final List<JmDNS> jmDNSList = new ArrayList<>();
 
-    public void start(int airTunesPort) throws Exception {
-        NetworkInterface.networkInterfaces()
-                .filter(networkInterfaceFilter())
-                .flatMap(NetworkInterface::inetAddresses)
-                .filter(inetAddressFilter())
-                .forEach(inetAddress -> {
-                    try {
-                        String mac = identity.getDeviceId();
+    public synchronized void start(int airTunesPort) throws Exception {
+        if (!jmDNSList.isEmpty()) {
+            return;
+        }
+        List<JmDNS> startedServices = new ArrayList<>();
+        String mac = identity.getDeviceId();
+        try {
+            NetworkInterface.networkInterfaces()
+                    .filter(networkInterfaceFilter())
+                    .flatMap(NetworkInterface::inetAddresses)
+                    .filter(inetAddressFilter())
+                    .forEach(inetAddress -> {
+                        JmDNS jmDNS = null;
+                        try {
+                            jmDNS = JmDNS.create(inetAddress);
+                            jmDNS.registerService(ServiceInfo.create(serverName + AIRPLAY_SERVICE_TYPE,
+                                    serverName, airTunesPort, 0, 0, airPlayMDNSProps(mac)));
+                            log.info("{} service is registered on address {}, port {}", serverName + AIRPLAY_SERVICE_TYPE,
+                                    inetAddress.getHostAddress(), airTunesPort);
 
-                        JmDNS jmDNS = JmDNS.create(inetAddress);
-                        jmDNS.registerService(ServiceInfo.create(serverName + AIRPLAY_SERVICE_TYPE,
-                                serverName, airTunesPort, 0, 0, airPlayMDNSProps(mac)));
-                        log.info("{} service is registered on address {}, port {}", serverName + AIRPLAY_SERVICE_TYPE,
-                                inetAddress.getHostAddress(), airTunesPort);
-
-                        String airTunesServerName = mac.replaceAll(":", "") + "@" + serverName;
-                        jmDNS.registerService(ServiceInfo.create(airTunesServerName + AIRTUNES_SERVICE_TYPE,
-                                airTunesServerName, airTunesPort, 0, 0, airTunesMDNSProps()));
-                        log.info("{} service is registered on address {}, port {}", airTunesServerName + AIRTUNES_SERVICE_TYPE,
-                                inetAddress.getHostAddress(), airTunesPort);
-
-                        jmDNSList.add(jmDNS);
-                    } catch (IOException e) {
-                        log.error(e.getMessage());
-                    }
-                });
+                            String airTunesServerName = mac.replaceAll(":", "") + "@" + serverName;
+                            jmDNS.registerService(ServiceInfo.create(airTunesServerName + AIRTUNES_SERVICE_TYPE,
+                                    airTunesServerName, airTunesPort, 0, 0, airTunesMDNSProps()));
+                            log.info("{} service is registered on address {}, port {}", airTunesServerName + AIRTUNES_SERVICE_TYPE,
+                                    inetAddress.getHostAddress(), airTunesPort);
+                            startedServices.add(jmDNS);
+                        } catch (Exception e) {
+                            close(jmDNS);
+                            log.warn("Unable to register AirPlay services on {}: {}",
+                                    inetAddress.getHostAddress(), e.getMessage());
+                        }
+                    });
+            if (startedServices.isEmpty()) {
+                throw new IOException("No network interface accepted the AirPlay Bonjour services");
+            }
+            jmDNSList.addAll(startedServices);
+        } catch (Exception e) {
+            startedServices.forEach(this::close);
+            throw e;
+        }
     }
 
-    public void stop() {
+    public synchronized void stop() {
         for (final JmDNS jmDNS : jmDNSList) {
+            close(jmDNS);
+        }
+        jmDNSList.clear();
+    }
+
+    private void close(JmDNS jmDNS) {
+        if (jmDNS == null) {
+            return;
+        }
+        try {
             jmDNS.unregisterAllServices();
+        } catch (RuntimeException e) {
+            log.debug("Unable to unregister mDNS services: {}", e.getMessage());
+        } finally {
             try {
                 jmDNS.close();
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
                 log.debug("Unable to close mDNS service: {}", e.getMessage());
             }
         }
-        jmDNSList.clear();
     }
 
     private Map<String, String> airPlayMDNSProps(String deviceId) {
         HashMap<String, String> airPlayMDNSProps = new HashMap<>();
         airPlayMDNSProps.put("deviceid", deviceId);
-        airPlayMDNSProps.put("features", "0x5A7FFFF7,0x1E"); // 0x5A7FFFF7 E4
+        airPlayMDNSProps.put("features", AirPlayFeatures.txtValue(hevcEnabled));
         airPlayMDNSProps.put("srcvers", "220.68");
         airPlayMDNSProps.put("flags", "0x44");
         airPlayMDNSProps.put("vv", "2");
@@ -98,7 +125,7 @@ public class AirPlayBonjour {
         airTunesMDNSProps.put("et", "0,3,5");
         airTunesMDNSProps.put("ek", "1");
         //airTunesMDNSProps.put("vv", "2");
-        airTunesMDNSProps.put("ft", "0x5A7FFFF7,0x1E");
+        airTunesMDNSProps.put("ft", AirPlayFeatures.txtValue(hevcEnabled));
         airTunesMDNSProps.put("am", "AppleTV3,2C");
         airTunesMDNSProps.put("md", "0,1,2");
         //airTunesMDNSProps.put("rhd", "5.6.0.0");

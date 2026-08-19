@@ -98,7 +98,7 @@ function Get-ClashProxy {
 
 function Test-GStreamerPlugins([string]$Bin) {
     $inspect = Join-Path $Bin 'gst-inspect-1.0.exe'
-    $required = @('appsrc', 'h264parse', 'avdec_h264', 'avdec_aac', 'avdec_alac', 'autovideosink', 'autoaudiosink')
+    $required = @('appsrc', 'clocksync', 'h264parse', 'avdec_h264', 'h265parse', 'avdec_h265', 'avdec_aac', 'avdec_alac', 'autovideosink', 'autoaudiosink')
     foreach ($plugin in $required) {
         & $inspect $plugin *> $null
         if ($LASTEXITCODE -ne 0) {
@@ -111,11 +111,23 @@ function Test-GStreamerPlugins([string]$Bin) {
     $d3d11Available = $LASTEXITCODE -eq 0
     & $inspect nvh264dec *> $null
     $nvdecAvailable = $LASTEXITCODE -eq 0
+    & $inspect d3d12h265dec *> $null
+    $d3d12HevcAvailable = $LASTEXITCODE -eq 0
+    & $inspect d3d11h265dec *> $null
+    $d3d11HevcAvailable = $LASTEXITCODE -eq 0
+    & $inspect nvh265dec *> $null
+    $nvdecHevcAvailable = $LASTEXITCODE -eq 0
     if ($d3d12Available) { Write-Host '[OK] D3D12 hardware H.264 decoding is available.' -ForegroundColor Green }
     if ($nvdecAvailable) { Write-Host '[OK] NVIDIA NVDEC H.264 decoding is available.' -ForegroundColor Green }
     if ($d3d11Available) { Write-Host '[OK] D3D11 hardware H.264 decoding is available.' -ForegroundColor Green }
     if (!$d3d12Available -and !$nvdecAvailable -and !$d3d11Available) {
         Write-Host '[WARN] No Windows hardware H.264 decoder was found; avdec_h264 will be used.' -ForegroundColor Yellow
+    }
+    if ($d3d12HevcAvailable) { Write-Host '[OK] D3D12 hardware HEVC decoding is available.' -ForegroundColor Green }
+    if ($nvdecHevcAvailable) { Write-Host '[OK] NVIDIA NVDEC HEVC decoding is available.' -ForegroundColor Green }
+    if ($d3d11HevcAvailable) { Write-Host '[OK] D3D11 hardware HEVC decoding is available.' -ForegroundColor Green }
+    if (!$d3d12HevcAvailable -and !$nvdecHevcAvailable -and !$d3d11HevcAvailable) {
+        Write-Host '[WARN] No Windows hardware HEVC decoder was found; experimental HEVC uses avdec_h265.' -ForegroundColor Yellow
     }
     Write-Host '[OK] Required GStreamer video and audio plugins are available.' -ForegroundColor Green
 }

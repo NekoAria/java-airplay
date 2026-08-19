@@ -3,6 +3,7 @@ package wtf.nanoka.airplay.server;
 import lombok.Data;
 
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 
 @Data
 public class AirPlayConfig {
@@ -13,10 +14,14 @@ public class AirPlayConfig {
     private String identityFile = Path.of(System.getProperty("user.home"), ".java-airplay", "identity.key").toString();
     private int audioJitterPackets = 3;
     private boolean requirePairing = true;
+    private boolean hevc = false;
 
     public void validate() {
         if (serverName == null || serverName.isBlank()) {
             throw new IllegalArgumentException("airplay.serverName must not be blank");
+        }
+        if (serverName.getBytes(StandardCharsets.UTF_8).length > 63) {
+            throw new IllegalArgumentException("airplay.serverName must not exceed 63 UTF-8 bytes");
         }
         resolve(width, "airplay.width", 320, 7680, 1920);
         resolve(height, "airplay.height", 240, 4320, 1080);

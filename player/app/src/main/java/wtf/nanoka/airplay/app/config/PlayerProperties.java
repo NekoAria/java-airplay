@@ -2,6 +2,7 @@ package wtf.nanoka.airplay.app.config;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import wtf.nanoka.airplay.player.gstreamer.VideoRenderMode;
 
 @Data
 @ConfigurationProperties(prefix = "player")
@@ -33,6 +34,7 @@ public class PlayerProperties {
         if (gstreamer.videoQueueDepth < 1 || gstreamer.videoQueueDepth > 16) {
             throw new IllegalArgumentException("player.gstreamer.videoQueueDepth must be between 1 and 16");
         }
+        VideoRenderMode.fromProperty(gstreamer.renderMode);
     }
 
     @Data
@@ -42,9 +44,10 @@ public class PlayerProperties {
 
     @Data
     public static class Gstreamer {
-        private boolean swing;
+        private boolean swing = true;
         private String videoDecoder = "auto";
         private String gpuAdapter = "auto";
         private int videoQueueDepth = 2;
+        private String renderMode = "balanced";
     }
 }

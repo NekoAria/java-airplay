@@ -16,6 +16,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GstGpuAdapterPipelineTest {
 
     @Test
+    void ignoresAdaptersWithoutRegisteredDecoderFactories() {
+        try {
+            GstPlayerUtils.configurePaths();
+            Gst.init(Version.of(1, 10), "GpuAdapterListTest");
+        } catch (Throwable error) {
+            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
+        }
+
+        assertTrue(GstPlayerDefault.availableGpuAdapterIndices().contains("auto"));
+        GstPlayerDefault.availableGpuAdapters().forEach(adapter -> {
+            assertTrue(adapter.index() >= 0);
+            assertTrue(!adapter.name().isBlank());
+            assertTrue(GstPlayerDefault.availableGpuAdapterIndices().contains(Integer.toString(adapter.index())));
+        });
+    }
+
+    @Test
     void usesDecoderFactoryRegisteredForSelectedDxgiAdapter() {
         try {
             GstPlayerUtils.configurePaths();
@@ -36,6 +53,9 @@ class GstGpuAdapterPipelineTest {
                 "d3d12h264dec", Integer.toString(selected.index()));
         assertTrue(configuredPipeline.contains("! " + decoderName + " !"));
         assertTrue(configuredPipeline.contains("d3d12videosink adapter=" + selected.index()));
+        assertTrue(configuredPipeline.indexOf("! " + decoderName + " !")
+                < configuredPipeline.indexOf("! queue "));
+        assertTrue(configuredPipeline.contains("sync=true"));
 
         String testPipeline = "videotestsrc num-buffers=10 "
                 + "! video/x-raw,width=640,height=360,framerate=30/1 "
