@@ -23,7 +23,7 @@ allprojects {
     apply plugin: 'java'
 
     group = 'wtf.nanoka'
-    version = providers.gradleProperty('version').getOrElse('1.0.7')
+    version = providers.gradleProperty('version').getOrElse('1.0.8')
 
     repositories {
         mavenCentral()
@@ -70,7 +70,15 @@ def windows = System.getProperty('os.name').toLowerCase().contains('windows')
 def releaseRuntimeDirectory = layout.buildDirectory.dir('release/windows-x64/runtime')
 def localGStreamerDirectory = layout.projectDirectory.dir('.runtime/gstreamer')
 def releaseOutputDirectory = layout.projectDirectory.dir('release')
-def releaseBaseName = "java-airplay-${project.version}-windows-x64"
+// Release artifacts carry the current UTC build date as a yyMMdd suffix.
+def releaseBuildDate = providers.provider {
+    new Date().format('yyMMdd', TimeZone.getTimeZone('UTC'))
+}
+def releaseVersion = releaseBuildDate.map { date -> "${project.version}.${date}" }
+def releaseBaseName = releaseVersion.map { value -> "java-airplay-${value}-windows-x64" }
+def releaseChecksumFile = providers.provider {
+    new File(releaseOutputDirectory.asFile, "${releaseBaseName.get()}.zip.sha256")
+}
 
 tasks.register('prepareGStreamerRuntime', Exec) {
     group = 'distribution'
@@ -113,10 +121,12 @@ tasks.register('createReleaseJavaRuntime', Exec) {
 tasks.register('release', Zip) {
     group = 'distribution'
     description = 'Builds the complete, end-user-ready Windows x64 ZIP distribution.'
-    dependsOn ':player:app:bootJar', 'prepareGStreamerRuntime', 'createReleaseJavaRuntime'
+    dependsOn ':player:app:bootJar', 'prepareGStreamerRuntime', 'createReleaseJavaRuntime',
+            subprojects.collect { "${it.path}:test" }
 
-    archiveFileName = "${releaseBaseName}.zip"
+    archiveFileName = releaseBaseName.map { "${it}.zip" }
     destinationDirectory = releaseOutputDirectory
+    outputs.file(releaseChecksumFile)
     zip64 = true
     includeEmptyDirs = false
 
@@ -158,7 +168,7 @@ tasks.register('release', Zip) {
             }
         }
         def checksum = digest.digest().collect { String.format('%02x', it) }.join()
-        def checksumFile = new File(zipFile.parentFile, zipFile.name + '.sha256')
+        def checksumFile = releaseChecksumFile.get()
         checksumFile.setText("${checksum}  ${zipFile.name}\n", 'UTF-8')
         logger.lifecycle("Release created: ${zipFile}")
         logger.lifecycle("SHA-256: ${checksum}")

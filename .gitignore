@@ -11,3 +11,4 @@ dump.h264
 .runtime/
 release/*.zip
 release/*.sha256
+release/*/

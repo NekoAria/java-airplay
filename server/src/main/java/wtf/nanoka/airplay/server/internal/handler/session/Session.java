@@ -10,6 +10,7 @@ import io.netty.channel.ChannelHandlerContext;
 import lombok.Getter;
 
 import java.util.Map;
+import java.net.InetAddress;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Getter
@@ -24,6 +25,7 @@ public class Session {
     private final TimingServer timingServer;
     private final Map<String, ChannelHandlerContext> reverseContexts;
     private final Map<String, ChannelHandlerContext> playlistRequestContexts;
+    private InetAddress httpPeerAddress;
 
     Session(String id, AirPlayIdentity identity, int maxJitterPackets) {
         this.id = id;
@@ -54,5 +56,23 @@ public class Session {
 
     public boolean hasActiveStreams() {
         return videoServer.isRunning() || audioServer.isRunning();
+    }
+
+    public synchronized boolean authorizeHttp(InetAddress peerAddress) {
+        if (peerAddress == null) {
+            return false;
+        }
+        if (httpPeerAddress == null) {
+            httpPeerAddress = peerAddress;
+        }
+        return httpPeerAddress.equals(peerAddress);
+    }
+
+    public synchronized boolean isHttpAuthorized(InetAddress peerAddress) {
+        return httpPeerAddress != null && httpPeerAddress.equals(peerAddress);
+    }
+
+    public synchronized boolean hasHttpAuthorization() {
+        return httpPeerAddress != null;
     }
 }

@@ -206,18 +206,25 @@ final class ThemeManager implements AutoCloseable {
     }
 
     enum ThemeMode {
-        SYSTEM("System"),
-        LIGHT("Light"),
-        DARK("Dark");
+        SYSTEM("System", "theme.system"),
+        LIGHT("Light", "theme.light"),
+        DARK("Dark", "theme.dark");
 
         private final String label;
+        private final String labelKey;
 
-        ThemeMode(String label) {
+        ThemeMode(String label, String labelKey) {
             this.label = label;
+            this.labelKey = labelKey;
         }
 
         String label() {
             return label;
+        }
+
+        /** Key into the UI message bundle; use with an I18n instance for localized labels. */
+        String labelKey() {
+            return labelKey;
         }
 
         static ThemeMode fromPreference(String value) {

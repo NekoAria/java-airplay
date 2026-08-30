@@ -66,6 +66,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Supplier;
 import java.util.prefs.Preferences;
+import java.text.MessageFormat;
 
 import wtf.nanoka.airplay.player.gstreamer.VideoRenderMode;
 import wtf.nanoka.airplay.player.gstreamer.GpuAdapter;
@@ -79,6 +80,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private static final String ALWAYS_ON_TOP_PREFERENCE = "always-on-top";
 
     private final Config config;
+    private final I18n i18n;
     private final Preferences preferences = Preferences.userNodeForPackage(VisionPlayerWindow.class);
 
     private ThemeManager themeManager;
@@ -87,7 +89,13 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private SidebarPanel sidebar;
     private CardLayout cardLayout;
     private JPanel cardPanel;
+    private JPanel videoFrame;
     private Canvas videoCanvas;
+    private VisionLabel detachedHint;
+    private ActionButton detachButton;
+    private ActionButton fullscreenButton;
+    private DetachedVideoWindow detachedVideoWindow;
+    private InfoChip pairingInfoChip;
     private StatusChip statusChip;
     private VisionLabel headerTitle;
     private VisionLabel idleTitle;
@@ -97,6 +105,8 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private JPanel receiverChips;
     private JPanel settingsStack;
     private final List<VisionLabel> settingDescriptions = new ArrayList<>();
+    private final List<SettingRowText> settingRowTexts = new ArrayList<>();
+    private final List<SectionLabelText> sectionLabelTexts = new ArrayList<>();
     private ReceiverSettings savedSettings;
     private JTextField receiverNameField;
     private JTextField widthField;
@@ -113,17 +123,82 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private JComboBox<GpuAdapterChoice> gpuAdapterCombo;
     private JSpinner videoQueueSpinner;
     private JComboBox<RenderModeChoice> renderModeCombo;
+    private JComboBox<LanguageChoice> languageCombo;
     private VisionLabel settingsStatus;
+    private VisionLabel settingsTitle;
     private final List<ActionButton> settingsActionButtons = new ArrayList<>();
+    private ActionButton resetButton;
+    private ActionButton saveButton;
+    private ActionButton saveAndRestartButton;
+    private VisionToggle alwaysOnTopToggle;
+    private ActionButton browseIdentity;
+    private ToolButton openIdentityFolder;
 
     private boolean connected;
+    private ConnectionState connectionState = ConnectionState.READY;
+    private VideoStreamInfo currentVideoStream;
     private String activeSection = RECEIVER_VIEW;
 
     public VisionPlayerWindow(Config config) {
+        this(config, new I18n());
+    }
+
+    public VisionPlayerWindow(Config config, I18n i18n) {
         this.config = Objects.requireNonNull(config, "config");
+        this.i18n = Objects.requireNonNull(i18n, "i18n");
         savedSettings = config.settings();
         themeManager = new ThemeManager();
+        videoSurfaceMoved = () -> Thread.ofVirtual().name("video-surface-restart").start(() -> {
+            try {
+                config.onVideoSurfaceMoved().run();
+            } catch (RuntimeException | LinkageError error) {
+                logWarning("Unable to restart the video pipeline after the window move: "
+                        + error.getMessage());
+            }
+        });
         runOnEdtAndWait(this::initialize);
+    }
+
+    /** Moves the detached video canvas back into the main window (EDT). */
+    private void attachCanvasToMain() {
+        videoFrame.removeAll();
+        videoFrame.add(videoCanvas, BorderLayout.CENTER);
+        videoCanvas.setBackground(palette().videoSurface());
+        videoCanvas.setFocusable(false);
+        updateDetachControls();
+        videoFrame.revalidate();
+        videoFrame.repaint();
+    }
+
+    /** Callback fired after the GStreamer surface (canvas) changed parent windows. */
+    private final Runnable videoSurfaceMoved;
+
+    private void logWarning(String message) {
+        System.getLogger(VisionPlayerWindow.class.getName()).log(System.Logger.Level.WARNING, message);
+    }
+
+    private void detachCanvas() {
+        videoFrame.removeAll();
+        videoFrame.add(detachedHint, BorderLayout.CENTER);
+        detachedVideoWindow.attachCanvas(videoCanvas);
+        SwingUtilities.invokeLater(videoSurfaceMoved);
+        updateDetachControls();
+        videoFrame.revalidate();
+        videoFrame.repaint();
+    }
+
+    private void attachCanvasBack() {
+        detachedVideoWindow.detachCanvas();
+        attachCanvasToMain();
+        SwingUtilities.invokeLater(videoSurfaceMoved);
+    }
+
+    private void updateDetachControls() {
+        boolean detached = detachedVideoWindow != null && detachedVideoWindow.hostedCanvas() == videoCanvas;
+        detachButton.setText(i18n.tr(detached ? "video.attach" : "video.detach"));
+        detachButton.setToolTipText(i18n.tr(detached ? "video.attach" : "video.detached.button.tooltip"));
+        fullscreenButton.setEnabled(detached);
+        fullscreenButton.setText(i18n.tr("video.fullscreen"));
     }
 
     public Canvas videoCanvas() {
@@ -137,9 +212,14 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 return;
             }
             connected = false;
+            connectionState = ConnectionState.CONNECTING;
+            currentVideoStream = streamInfo;
             statusChip.setState(ConnectionState.CONNECTING);
-            idleTitle.setText("Preparing stream");
-            idleSubtitle.setText("Establishing a secure connection");
+            idleTitle.setText(i18n.tr("receiver.preparing"));
+            idleSubtitle.setText(i18n.tr("receiver.connecting"));
+            if (detachedVideoWindow != null) {
+                detachedVideoWindow.setStatusConnecting();
+            }
             if (RECEIVER_VIEW.equals(activeSection)) {
                 cardLayout.show(cardPanel, RECEIVER_VIEW);
             }
@@ -150,12 +230,17 @@ public final class VisionPlayerWindow implements AutoCloseable {
     public void showVideo(VideoStreamInfo streamInfo) {
         runOnEdt(() -> {
             connected = true;
+            connectionState = ConnectionState.CONNECTED;
+            currentVideoStream = streamInfo;
             statusChip.setState(ConnectionState.CONNECTED);
-            headerTitle.setText("Screen Mirroring");
+            headerTitle.setText(i18n.tr("frame.screenMirroring"));
 
             updateVideoDetails(streamInfo);
             if (RECEIVER_VIEW.equals(activeSection)) {
                 cardLayout.show(cardPanel, VIDEO_VIEW);
+            }
+            if (detachedVideoWindow != null) {
+                detachedVideoWindow.setStatusConnected(detailsText(streamInfo));
             }
             showFrame();
             videoCanvas.requestFocusInWindow();
@@ -165,10 +250,15 @@ public final class VisionPlayerWindow implements AutoCloseable {
     public void showIdle() {
         runOnEdt(() -> {
             connected = false;
+            connectionState = ConnectionState.READY;
+            currentVideoStream = null;
             statusChip.setState(ConnectionState.READY);
-            headerTitle.setText("Receiver");
-            idleTitle.setText("Ready to receive");
+            headerTitle.setText(i18n.tr("frame.receiver"));
+            idleTitle.setText(i18n.tr("receiver.ready"));
             idleSubtitle.setText(config.receiverName());
+            if (detachedVideoWindow != null) {
+                detachedVideoWindow.setStatusReady();
+            }
             if (RECEIVER_VIEW.equals(activeSection)) {
                 cardLayout.show(cardPanel, RECEIVER_VIEW);
             }
@@ -181,15 +271,19 @@ public final class VisionPlayerWindow implements AutoCloseable {
     }
 
     private void updateVideoDetails(VideoStreamInfo streamInfo) {
+        videoDetails.setText(detailsText(streamInfo));
+    }
+
+    private String detailsText(VideoStreamInfo streamInfo) {
         int width = streamInfo.getWidth() > 0 ? streamInfo.getWidth() : config.advertisedWidth();
         int height = streamInfo.getHeight() > 0 ? streamInfo.getHeight() : config.advertisedHeight();
         double fps = streamInfo.getFps() > 0 ? streamInfo.getFps() : config.fps();
         String codec = switch (streamInfo.getCodec()) {
             case H264 -> "H.264";
             case HEVC -> "HEVC";
-            case UNKNOWN -> "Detecting codec";
+            case UNKNOWN -> i18n.tr("receiver.details.detecting");
         };
-        videoDetails.setText(String.format(Locale.ROOT, "%d x %d  |  %.0f FPS  |  %s", width, height, fps, codec));
+        return String.format(Locale.ROOT, "%d x %d  |  %.0f FPS  |  %s", width, height, fps, codec);
     }
 
     public void setCloseToTray(boolean closeToTray) {
@@ -197,10 +291,167 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 closeToTray ? JFrame.HIDE_ON_CLOSE : JFrame.EXIT_ON_CLOSE));
     }
 
+    /** Tray action: shows the detached video window (detaching the canvas when needed). */
+    public void showDetachedVideo() {
+        runOnEdt(() -> {
+            if (detachedVideoWindow == null) {
+                return;
+            }
+            if (detachedVideoWindow.hostedCanvas() != videoCanvas) {
+                detachCanvas();
+            }
+            detachedVideoWindow.showFrame();
+        });
+    }
+
+    /** Tray action: toggles full screen on the detached video window. */
+    public void toggleVideoFullscreen() {
+        runOnEdt(() -> {
+            if (detachedVideoWindow != null) {
+                if (detachedVideoWindow.hostedCanvas() != videoCanvas) {
+                    detachCanvas();
+                }
+                detachedVideoWindow.toggleFullscreen();
+            }
+        });
+    }
+
+    /** Tray action: cycles the UI language between English and Chinese. */
+    public void toggleLanguage() {
+        I18n.Language next = i18n.language() == I18n.Language.ENGLISH
+                ? I18n.Language.CHINESE
+                : I18n.Language.ENGLISH;
+        i18n.setLanguage(next);
+    }
+
+    public I18n.Language language() {
+        return i18n.language();
+    }
+
+    public String languageLabel() {
+        return i18n.language().label();
+    }
+
+    public String localized(String key) {
+        return i18n.tr(key);
+    }
+
+    public void addLanguageChangeListener(Runnable listener) {
+        i18n.addLanguageChangeListener(listener);
+    }
+
+    /** Re-renders every translatable text after a language change (EDT). */
+    private void refreshLanguage() {
+        runOnEdt(() -> {
+            frame.setTitle(MessageFormat.format(i18n.tr("frame.title"), config.receiverName()));
+            headerTitle.setText(SETTINGS_VIEW.equals(activeSection)
+                    ? i18n.tr("frame.settings")
+                    : connected ? i18n.tr("frame.screenMirroring") : i18n.tr("frame.receiver"));
+            if (settingsTitle != null) {
+                settingsTitle.setText(i18n.tr("settings.title"));
+            }
+            sidebar.updateLanguage();
+            statusChip.updateLanguage();
+            if (themeSelector != null) {
+                themeSelector.updateLanguage();
+            }
+            idleTitle.setText(connectionState == ConnectionState.READY
+                    ? i18n.tr("receiver.ready") : i18n.tr("receiver.preparing"));
+            idleSubtitle.setText(connectionState == ConnectionState.READY
+                    ? config.receiverName() : i18n.tr("receiver.connecting"));
+            videoDetails.setText(currentVideoStream == null
+                    ? i18n.tr("video.waiting")
+                    : detailsText(currentVideoStream));
+            detachedHint.setText(i18n.tr("video.detachedHint"));
+            updateDetachControls();
+            if (detachedVideoWindow != null) {
+                detachedVideoWindow.updateLanguage();
+            }
+            for (SectionLabelText section : sectionLabelTexts) {
+                section.label().setText(i18n.tr(section.key()).toUpperCase(Locale.ROOT));
+            }
+            for (SettingRowText row : settingRowTexts) {
+                row.title().setText(i18n.tr(row.titleKey()));
+                row.description().setText(i18n.tr(row.descriptionKey()));
+            }
+            for (VisionLabel description : settingDescriptions) {
+                description.revalidate();
+            }
+            if (languageCombo != null) {
+                languageCombo.setSelectedItem(new LanguageChoice(i18n.language()));
+            }
+            if (pairingInfoChip != null) {
+                pairingInfoChip.setText(config.pairingRequired()
+                        ? i18n.tr("status.pairingOn") : i18n.tr("status.pairingOff"));
+            }
+            if (alwaysOnTopToggle != null) {
+                alwaysOnTopToggle.setToolTipText(i18n.tr("settings.alwaysOnTop.description"));
+                alwaysOnTopToggle.getAccessibleContext().setAccessibleName(i18n.tr("settings.alwaysOnTop"));
+            }
+            if (pairingToggle != null) {
+                pairingToggle.setToolTipText(i18n.tr("settings.securePairing.tooltip"));
+            }
+            if (hevcToggle != null) {
+                hevcToggle.setToolTipText(i18n.tr("settings.hevc.tooltip"));
+            }
+            if (swingToggle != null) {
+                swingToggle.setToolTipText(i18n.tr("settings.integratedWindow.tooltip"));
+            }
+            if (trayToggle != null) {
+                trayToggle.setToolTipText(i18n.tr("settings.systemTray.tooltip"));
+            }
+            if (browseIdentity != null) {
+                browseIdentity.setText(i18n.tr("settings.identityFile.choose"));
+                browseIdentity.setToolTipText(i18n.tr("settings.identityFile.tooltip"));
+            }
+            if (openIdentityFolder != null) {
+                openIdentityFolder.setToolTipText(i18n.tr("settings.identityFile.openFolder"));
+                openIdentityFolder.getAccessibleContext().setAccessibleName(
+                        i18n.tr("settings.identityFile.accessible"));
+            }
+            if (resetButton != null) {
+                resetButton.setText(i18n.tr("settings.reset"));
+            }
+            if (saveButton != null) {
+                saveButton.setText(i18n.tr("settings.save"));
+            }
+            if (saveAndRestartButton != null) {
+                saveAndRestartButton.setText(i18n.tr("settings.saveAndRestart"));
+            }
+            refreshLocalizedControlMetadata();
+            applyPalette();
+        });
+    }
+
+    private void refreshLocalizedControlMetadata() {
+        setAccessibleName(alwaysOnTopToggle, "settings.alwaysOnTop");
+        setAccessibleName(receiverNameField, "settings.receiverName");
+        setAccessibleName(widthField, "settings.displayProfile");
+        setAccessibleName(heightField, "settings.displayProfile");
+        setAccessibleName(fpsField, "settings.displayProfile");
+        setAccessibleName(pairingToggle, "settings.securePairing");
+        setAccessibleName(hevcToggle, "settings.hevc");
+        setAccessibleName(playerImplementationCombo, "settings.player");
+        setAccessibleName(renderModeCombo, "settings.renderMode");
+        setAccessibleName(decoderCombo, "settings.videoDecoder");
+        setAccessibleName(gpuAdapterCombo, "settings.gpuAdapter");
+        setAccessibleName(videoQueueSpinner, "settings.videoBuffer");
+        setAccessibleName(audioJitterSpinner, "settings.audioJitter");
+        setAccessibleName(swingToggle, "settings.integratedWindow");
+        setAccessibleName(trayToggle, "settings.systemTray");
+        setAccessibleName(browseIdentity, "settings.identityFile.choose");
+    }
+
+    private void setAccessibleName(JComponent component, String key) {
+        if (component != null) {
+            component.getAccessibleContext().setAccessibleName(i18n.tr(key));
+        }
+    }
+
     private void initialize() {
         JFrame.setDefaultLookAndFeelDecorated(true);
 
-        frame = new JFrame("Java AirPlay - " + config.receiverName());
+        frame = new JFrame(MessageFormat.format(i18n.tr("frame.title"), config.receiverName()));
         frame.setDefaultCloseOperation(config.closeToTray() ? JFrame.HIDE_ON_CLOSE : JFrame.EXIT_ON_CLOSE);
         Rectangle usableBounds = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
         int availableWidth = Math.max(1, usableBounds.width - 32);
@@ -234,6 +485,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         });
 
         themeManager.addListener(this::applyPalette);
+        i18n.addLanguageChangeListener(this::refreshLanguage);
         applyPalette();
         frame.setLocation(
                 usableBounds.x + Math.max(0, (usableBounds.width - initialWidth) / 2),
@@ -249,7 +501,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         header.setBorder(BorderFactory.createEmptyBorder(11, 17, 11, 14));
         header.setPreferredSize(new Dimension(100, 58));
 
-        headerTitle = label("Receiver", 17, Font.BOLD, TextTone.PRIMARY);
+        headerTitle = label(i18n.tr("frame.receiver"), 17, Font.BOLD, TextTone.PRIMARY);
         headerTitle.setToolTipText(config.receiverName());
         statusChip = new StatusChip(this::palette, config.pairingRequired());
         header.add(headerTitle, BorderLayout.CENTER);
@@ -276,7 +528,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         constraints.insets.bottom = 18;
         view.add(new ReceiverIllustration(this::palette), constraints);
 
-        idleTitle = label("Ready to receive", 28, Font.BOLD, TextTone.PRIMARY);
+        idleTitle = label(i18n.tr("receiver.ready"), 28, Font.BOLD, TextTone.PRIMARY);
         constraints.gridy++;
         constraints.insets.bottom = 6;
         view.add(idleTitle, constraints);
@@ -290,8 +542,9 @@ public final class VisionPlayerWindow implements AutoCloseable {
         receiverChips.add(new InfoChip(this::palette,
                 config.advertisedWidth() + " x " + config.advertisedHeight(), 118));
         receiverChips.add(new InfoChip(this::palette, config.fps() + " FPS", 82));
-        receiverChips.add(new InfoChip(this::palette,
-                config.pairingRequired() ? "Pairing on" : "Pairing off", 104));
+        pairingInfoChip = new InfoChip(this::palette,
+                config.pairingRequired() ? i18n.tr("status.pairingOn") : i18n.tr("status.pairingOff"), 120);
+        receiverChips.add(pairingInfoChip);
         constraints.gridy++;
         constraints.insets.bottom = 0;
         view.add(receiverChips, constraints);
@@ -308,23 +561,54 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private JComponent buildVideoView() {
         JPanel view = transparentPanel(new BorderLayout(0, 10));
 
-        JPanel videoFrame = new JPanel(new BorderLayout());
+        videoFrame = new JPanel(new BorderLayout());
         videoFrame.setBorder(BorderFactory.createEmptyBorder(3, 3, 3, 3));
         videoCanvas = new Canvas();
         videoCanvas.setBackground(palette().videoSurface());
         videoCanvas.setFocusable(false);
         videoFrame.add(videoCanvas, BorderLayout.CENTER);
 
+        detachedHint = label(i18n.tr("video.detachedHint"), 14, Font.PLAIN, TextTone.SECONDARY);
+        detachedHint.setHorizontalAlignment(SwingConstants.CENTER);
+
+        detachedVideoWindow = new DetachedVideoWindow(
+                this::palette, this::attachCanvasToMain, this::onDetachedWindowClose, i18n);
+
         GlassPanel informationBar = new GlassPanel(this::palette, 8, false);
         informationBar.setLayout(new BorderLayout());
         informationBar.setBorder(BorderFactory.createEmptyBorder(10, 15, 10, 15));
         informationBar.setPreferredSize(new Dimension(100, 44));
-        videoDetails = label("Waiting for stream details", 12, Font.PLAIN, TextTone.SECONDARY);
+        videoDetails = label(i18n.tr("video.waiting"), 12, Font.PLAIN, TextTone.SECONDARY);
         informationBar.add(videoDetails, BorderLayout.WEST);
+
+        JPanel controls = transparentPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        detachButton = new ActionButton(this::palette, i18n.tr("video.detach"), 128, false);
+        detachButton.addActionListener(event -> toggleDetached());
+        fullscreenButton = new ActionButton(this::palette, i18n.tr("video.fullscreen"), 128, false);
+        fullscreenButton.setEnabled(false);
+        fullscreenButton.addActionListener(event -> detachedVideoWindow.toggleFullscreen());
+        controls.add(detachButton);
+        controls.add(fullscreenButton);
+        informationBar.add(controls, BorderLayout.EAST);
 
         view.add(videoFrame, BorderLayout.CENTER);
         view.add(informationBar, BorderLayout.SOUTH);
         return view;
+    }
+
+    private void toggleDetached() {
+        boolean detached = detachedVideoWindow.hostedCanvas() == videoCanvas;
+        if (detached) {
+            attachCanvasBack();
+        } else {
+            detachCanvas();
+        }
+    }
+
+    private void onDetachedWindowClose(Canvas canvas) {
+        if (detachedVideoWindow.hostedCanvas() == canvas) {
+            attachCanvasBack();
+        }
     }
 
     private JComponent buildSettingsView() {
@@ -333,38 +617,58 @@ public final class VisionPlayerWindow implements AutoCloseable {
         settingsStack.setLayout(new BoxLayout(settingsStack, BoxLayout.Y_AXIS));
         settingsStack.setBorder(BorderFactory.createEmptyBorder(24, 30, 28, 30));
 
-        VisionLabel title = label("Settings", 28, Font.BOLD, TextTone.PRIMARY);
-        title.setAlignmentX(Component.LEFT_ALIGNMENT);
-        settingsStack.add(title);
+        settingsTitle = label(i18n.tr("settings.title"), 28, Font.BOLD, TextTone.PRIMARY);
+        settingsTitle.setAlignmentX(Component.LEFT_ALIGNMENT);
+        settingsStack.add(settingsTitle);
         settingsStack.add(Box.createVerticalStrut(20));
 
-        settingsStack.add(sectionLabel("Appearance"));
+        settingsStack.add(sectionLabel("settings.appearance"));
         settingsStack.add(Box.createVerticalStrut(8));
-        themeSelector = new ThemeSelector(this::palette, themeManager);
-        settingsStack.add(settingRow("Theme", "Match the desktop or choose an appearance", themeSelector));
-        VisionToggle alwaysOnTop = new VisionToggle(
-                this::palette, preferences.getBoolean(ALWAYS_ON_TOP_PREFERENCE, false));
-        alwaysOnTop.setToolTipText("Keep the receiver window above other windows");
-        alwaysOnTop.getAccessibleContext().setAccessibleName("Always on top");
-        frame.setAlwaysOnTop(alwaysOnTop.isSelected());
-        alwaysOnTop.addActionListener(event -> {
-            frame.setAlwaysOnTop(alwaysOnTop.isSelected());
-            preferences.putBoolean(ALWAYS_ON_TOP_PREFERENCE, alwaysOnTop.isSelected());
+
+        languageCombo = new JComboBox<>();
+        for (I18n.Language language : I18n.Language.values()) {
+            languageCombo.addItem(new LanguageChoice(language));
+        }
+        languageCombo.setSelectedItem(new LanguageChoice(i18n.language()));
+        languageCombo.setFont(interfaceFont(12, Font.PLAIN));
+        languageCombo.setPreferredSize(new Dimension(180, 34));
+        languageCombo.setMinimumSize(new Dimension(140, 34));
+        languageCombo.addActionListener(event -> {
+            LanguageChoice choice = (LanguageChoice) languageCombo.getSelectedItem();
+            if (choice != null && choice.language() != i18n.language()) {
+                i18n.setLanguage(choice.language());
+            }
         });
-        settingsStack.add(settingRow("Always on top", "Keep the receiver visible while mirroring", alwaysOnTop));
+        settingsStack.add(settingRow("settings.language", "settings.language.description",
+                languageCombo));
+
+        themeSelector = new ThemeSelector(this::palette, themeManager);
+        settingsStack.add(settingRow("settings.theme", "settings.theme.description", themeSelector));
+        alwaysOnTopToggle = new VisionToggle(
+                this::palette, preferences.getBoolean(ALWAYS_ON_TOP_PREFERENCE, false));
+        alwaysOnTopToggle.setToolTipText(i18n.tr("settings.alwaysOnTop.description"));
+        alwaysOnTopToggle.getAccessibleContext().setAccessibleName(i18n.tr("settings.alwaysOnTop"));
+        frame.setAlwaysOnTop(alwaysOnTopToggle.isSelected());
+        alwaysOnTopToggle.addActionListener(event -> {
+            frame.setAlwaysOnTop(alwaysOnTopToggle.isSelected());
+            preferences.putBoolean(ALWAYS_ON_TOP_PREFERENCE, alwaysOnTopToggle.isSelected());
+        });
+        settingsStack.add(settingRow("settings.alwaysOnTop", "settings.alwaysOnTop.description",
+                alwaysOnTopToggle));
 
         settingsStack.add(Box.createVerticalStrut(20));
-        settingsStack.add(sectionLabel("Receiver"));
+        settingsStack.add(sectionLabel("settings.receiver"));
         settingsStack.add(Box.createVerticalStrut(8));
         receiverNameField = formField(savedSettings.serverName(), 250);
-        settingsStack.add(settingRow("Receiver name", "Shown in the iPhone Screen Mirroring list", receiverNameField));
+        settingsStack.add(settingRow("settings.receiverName", "settings.receiverName.description",
+                receiverNameField));
 
         widthField = formField(savedSettings.width(), 76);
         heightField = formField(savedSettings.height(), 76);
         fpsField = formField(savedSettings.fps(), 64);
-        widthField.getAccessibleContext().setAccessibleName("Advertised width");
-        heightField.getAccessibleContext().setAccessibleName("Advertised height");
-        fpsField.getAccessibleContext().setAccessibleName("Advertised frame rate");
+        widthField.getAccessibleContext().setAccessibleName(i18n.tr("settings.displayProfile"));
+        heightField.getAccessibleContext().setAccessibleName(i18n.tr("settings.displayProfile"));
+        fpsField.getAccessibleContext().setAccessibleName(i18n.tr("settings.displayProfile"));
         JPanel displayProfile = transparentPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         displayProfile.add(widthField);
         displayProfile.add(valueLabel("x"));
@@ -372,33 +676,35 @@ public final class VisionPlayerWindow implements AutoCloseable {
         displayProfile.add(valueLabel("@"));
         displayProfile.add(fpsField);
         displayProfile.add(valueLabel("FPS"));
-        settingsStack.add(settingRow("Display profile", "Advertised width, height, and frame rate; auto is accepted",
+        settingsStack.add(settingRow("settings.displayProfile", "settings.displayProfile.description",
                 displayProfile));
 
         pairingToggle = new VisionToggle(this::palette, savedSettings.requirePairing());
-        pairingToggle.setToolTipText("Require Pair-Verify before media setup");
-        settingsStack.add(settingRow("Secure pairing", "Reject unverified media connections", pairingToggle));
+        pairingToggle.setToolTipText(i18n.tr("settings.securePairing.tooltip"));
+        settingsStack.add(settingRow("settings.securePairing", "settings.securePairing.description",
+                pairingToggle));
 
         hevcToggle = new VisionToggle(this::palette, savedSettings.hevcEnabled());
-        hevcToggle.setToolTipText("Advertise experimental HEVC screen mirroring support");
-        settingsStack.add(settingRow("HEVC reception", "Experimental H.265 negotiation and decoding", hevcToggle));
+        hevcToggle.setToolTipText(i18n.tr("settings.hevc.tooltip"));
+        settingsStack.add(settingRow("settings.hevc", "settings.hevc.description", hevcToggle));
 
         settingsStack.add(Box.createVerticalStrut(20));
-        settingsStack.add(sectionLabel("Playback"));
+        settingsStack.add(sectionLabel("settings.playback"));
         settingsStack.add(Box.createVerticalStrut(8));
 
         playerImplementationCombo = choiceCombo(
                 new String[]{"gstreamer", "ffmpeg", "vlc", "h264-dump"}, 180, false);
-        settingsStack.add(settingRow("Player", "Media playback backend", playerImplementationCombo));
+        settingsStack.add(settingRow("settings.player", "settings.player.description",
+                playerImplementationCombo));
 
         renderModeCombo = new JComboBox<>();
         for (VideoRenderMode mode : VideoRenderMode.values()) {
-            renderModeCombo.addItem(new RenderModeChoice(mode.propertyValue(), mode.label()));
+            renderModeCombo.addItem(new RenderModeChoice(mode.propertyValue(), mode.labelKey(), i18n));
         }
         renderModeCombo.setPreferredSize(new Dimension(180, 34));
         renderModeCombo.setMinimumSize(renderModeCombo.getPreferredSize());
         selectRenderMode(savedSettings.renderMode());
-        settingsStack.add(settingRow("Render mode", "Balanced prevents tearing; low latency presents immediately",
+        settingsStack.add(settingRow("settings.renderMode", "settings.renderMode.description",
                 renderModeCombo));
 
         decoderCombo = choiceCombo(new String[]{
@@ -406,59 +712,61 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 "avdec_h264", "vah264dec", "v4l2h264dec", "vtdec_hw"
         }, 210, true);
         decoderCombo.setSelectedItem(savedSettings.videoDecoder());
-        settingsStack.add(settingRow("Video decoder", "Automatic hardware selection or a GStreamer element",
+        settingsStack.add(settingRow("settings.videoDecoder", "settings.videoDecoder.description",
                 decoderCombo));
 
         settingsStack.add(Box.createVerticalStrut(20));
-        settingsStack.add(sectionLabel("Stream & decoding"));
+        settingsStack.add(sectionLabel("settings.streamDecoding"));
         settingsStack.add(Box.createVerticalStrut(8));
 
         gpuAdapterCombo = new JComboBox<>();
-        gpuAdapterCombo.addItem(GpuAdapterChoice.automatic());
+        gpuAdapterCombo.addItem(GpuAdapterChoice.automatic(i18n));
         GstPlayerDefault.availableGpuAdapters().stream()
-                .map(GpuAdapterChoice::detected)
+                .map(adapter -> GpuAdapterChoice.detected(adapter, i18n))
                 .forEach(gpuAdapterCombo::addItem);
         gpuAdapterCombo.setFont(interfaceFont(12, Font.PLAIN));
         gpuAdapterCombo.setPreferredSize(new Dimension(300, 34));
         gpuAdapterCombo.setMinimumSize(new Dimension(180, 34));
         selectGpuAdapter(savedSettings.gpuAdapter());
-        settingsStack.add(settingRow("GPU adapter", "Hardware detected through DXGI; configuration stores its index",
+        settingsStack.add(settingRow("settings.gpuAdapter", "settings.gpuAdapter.description",
                 gpuAdapterCombo));
 
         videoQueueSpinner = numberSpinner(savedSettings.videoQueueDepth(), 1, 16, 1, 86);
-        settingsStack.add(settingRow("Video buffer", "Decrypted access units queued before GStreamer",
+        settingsStack.add(settingRow("settings.videoBuffer", "settings.videoBuffer.description",
                 videoQueueSpinner));
 
         audioJitterSpinner = numberSpinner(savedSettings.audioJitterPackets(), 1, 64, 1, 86);
-        settingsStack.add(settingRow("Audio jitter", "Packet reorder window for unstable networks",
+        settingsStack.add(settingRow("settings.audioJitter", "settings.audioJitter.description",
                 audioJitterSpinner));
 
         settingsStack.add(Box.createVerticalStrut(20));
-        settingsStack.add(sectionLabel("Application"));
+        settingsStack.add(sectionLabel("settings.application"));
         settingsStack.add(Box.createVerticalStrut(8));
 
         swingToggle = new VisionToggle(this::palette, savedSettings.swingEnabled());
-        swingToggle.setToolTipText("Show the integrated desktop window");
-        settingsStack.add(settingRow("Integrated window", "Use the native video surface in this application",
+        swingToggle.setToolTipText(i18n.tr("settings.integratedWindow.tooltip"));
+        settingsStack.add(settingRow("settings.integratedWindow", "settings.integratedWindow.description",
                 swingToggle));
 
         trayToggle = new VisionToggle(this::palette, savedSettings.trayEnabled());
-        trayToggle.setToolTipText("Show the Java AirPlay system tray menu");
-        settingsStack.add(settingRow("System tray", "Keep Open and Quit actions in the tray", trayToggle));
+        trayToggle.setToolTipText(i18n.tr("settings.systemTray.tooltip"));
+        settingsStack.add(settingRow("settings.systemTray", "settings.systemTray.description",
+                trayToggle));
 
         identityFileField = formField(savedSettings.identityFile(), 280);
         identityFileField.setToolTipText(savedSettings.identityFile());
         JPanel identityPicker = transparentPanel(new FlowLayout(FlowLayout.RIGHT, 7, 0));
         identityPicker.add(identityFileField);
-        ActionButton browseIdentity = new ActionButton(this::palette, "Browse", 78, false);
-        browseIdentity.setToolTipText("Choose an existing identity file or a new file location");
+        browseIdentity = new ActionButton(this::palette, i18n.tr("settings.identityFile.choose"), 78, false);
+        browseIdentity.setToolTipText(i18n.tr("settings.identityFile.tooltip"));
         browseIdentity.addActionListener(event -> browseIdentityFile());
         identityPicker.add(browseIdentity);
-        ToolButton openIdentityFolder = new ToolButton(this::palette, ToolIcon.FOLDER);
-        openIdentityFolder.setToolTipText("Open identity file folder");
+        openIdentityFolder = new ToolButton(this::palette, ToolIcon.FOLDER);
+        openIdentityFolder.setToolTipText(i18n.tr("settings.identityFile.openFolder"));
+        openIdentityFolder.getAccessibleContext().setAccessibleName(i18n.tr("settings.identityFile.accessible"));
         openIdentityFolder.addActionListener(event -> openIdentityFolder());
         identityPicker.add(openIdentityFolder);
-        settingsStack.add(settingRow("Identity file", "Persistent receiver identity used for pairing",
+        settingsStack.add(settingRow("settings.identityFile", "settings.identityFile.description",
                 identityPicker));
 
         settingsStack.add(Box.createVerticalGlue());
@@ -489,18 +797,18 @@ public final class VisionPlayerWindow implements AutoCloseable {
         footer.add(settingsStatus, BorderLayout.CENTER);
 
         JPanel actions = transparentPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        ActionButton reset = new ActionButton(this::palette, "Reset", 72, false);
-        reset.addActionListener(event -> resetSettingsForm(savedSettings));
-        ActionButton save = new ActionButton(this::palette, "Save", 74, false);
-        save.addActionListener(event -> saveSettings(false));
-        ActionButton saveAndRestart = new ActionButton(this::palette, "Save & Restart", 132, true);
-        saveAndRestart.addActionListener(event -> saveSettings(true));
-        actions.add(reset);
-        actions.add(save);
-        actions.add(saveAndRestart);
-        settingsActionButtons.add(reset);
-        settingsActionButtons.add(save);
-        settingsActionButtons.add(saveAndRestart);
+        resetButton = new ActionButton(this::palette, i18n.tr("settings.reset"), 72, false);
+        resetButton.addActionListener(event -> resetSettingsForm(savedSettings));
+        saveButton = new ActionButton(this::palette, i18n.tr("settings.save"), 74, false);
+        saveButton.addActionListener(event -> saveSettings(false));
+        saveAndRestartButton = new ActionButton(this::palette, i18n.tr("settings.saveAndRestart"), 132, true);
+        saveAndRestartButton.addActionListener(event -> saveSettings(true));
+        actions.add(resetButton);
+        actions.add(saveButton);
+        actions.add(saveAndRestartButton);
+        settingsActionButtons.add(resetButton);
+        settingsActionButtons.add(saveButton);
+        settingsActionButtons.add(saveAndRestartButton);
         footer.add(actions, BorderLayout.EAST);
         return footer;
     }
@@ -535,7 +843,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private void saveSettings(boolean restart) {
         ReceiverSettings settings = collectSettings();
         setSettingsActionsEnabled(false);
-        settingsStatus.setText(restart ? "Validating settings..." : "Saving...");
+        settingsStatus.setText(i18n.tr(restart ? "settings.validating" : "settings.saving"));
         Thread.ofVirtual().name("settings-save").start(() -> {
             SettingsController.Result saveResult;
             SettingsController.Result result;
@@ -561,7 +869,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 if (!finalResult.success()) {
                     Toolkit.getDefaultToolkit().beep();
                     JOptionPane.showMessageDialog(frame, finalResult.message(),
-                            "Unable to apply settings", JOptionPane.ERROR_MESSAGE);
+                            i18n.tr("settings.error.title"), JOptionPane.ERROR_MESSAGE);
                 }
                 if (!restart || !finalResult.success()) {
                     setSettingsActionsEnabled(true);
@@ -632,7 +940,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 return;
             }
         }
-        gpuAdapterCombo.addItem(GpuAdapterChoice.unavailable(normalized));
+        gpuAdapterCombo.addItem(GpuAdapterChoice.unavailable(normalized, i18n));
         gpuAdapterCombo.setSelectedIndex(gpuAdapterCombo.getItemCount() - 1);
     }
 
@@ -660,13 +968,14 @@ public final class VisionPlayerWindow implements AutoCloseable {
         return Objects.toString(value, "").trim();
     }
 
-    private VisionLabel sectionLabel(String text) {
-        VisionLabel label = label(text.toUpperCase(Locale.ROOT), 11, Font.BOLD, TextTone.TERTIARY);
+    private VisionLabel sectionLabel(String key) {
+        VisionLabel label = label(i18n.tr(key).toUpperCase(Locale.ROOT), 11, Font.BOLD, TextTone.TERTIARY);
         label.setAlignmentX(Component.LEFT_ALIGNMENT);
+        sectionLabelTexts.add(new SectionLabelText(label, key));
         return label;
     }
 
-    private JComponent settingRow(String title, String description, JComponent control) {
+    private JComponent settingRow(String titleKey, String descriptionKey, JComponent control) {
         SettingRow row = new SettingRow(this::palette);
         row.setLayout(new BorderLayout(14, 0));
         row.setBorder(BorderFactory.createEmptyBorder(11, 2, 11, 2));
@@ -675,6 +984,8 @@ public final class VisionPlayerWindow implements AutoCloseable {
         row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 74));
         row.setPreferredSize(new Dimension(700, 74));
 
+        String title = i18n.tr(titleKey);
+        String description = i18n.tr(descriptionKey);
         JPanel copy = transparentPanel();
         copy.setLayout(new BoxLayout(copy, BoxLayout.Y_AXIS));
         VisionLabel titleLabel = label(title, 14, Font.BOLD, TextTone.PRIMARY);
@@ -684,6 +995,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         VisionLabel descriptionLabel = label(description, 12, Font.PLAIN, TextTone.SECONDARY);
         settingDescriptions.add(descriptionLabel);
         copy.add(descriptionLabel);
+        settingRowTexts.add(new SettingRowText(titleLabel, descriptionLabel, titleKey, descriptionKey));
         JPanel controlWrapper = transparentPanel(new GridBagLayout());
         controlWrapper.add(control);
         if (control.getAccessibleContext().getAccessibleName() == null) {
@@ -730,10 +1042,10 @@ public final class VisionPlayerWindow implements AutoCloseable {
         activeSection = section;
         sidebar.setSelectedSection(section);
         if (SETTINGS_VIEW.equals(section)) {
-            headerTitle.setText("Settings");
+            headerTitle.setText(i18n.tr("frame.settings"));
             cardLayout.show(cardPanel, SETTINGS_VIEW);
         } else {
-            headerTitle.setText(connected ? "Screen Mirroring" : "Receiver");
+            headerTitle.setText(connected ? i18n.tr("frame.screenMirroring") : i18n.tr("frame.receiver"));
             cardLayout.show(cardPanel, connected ? VIDEO_VIEW : RECEIVER_VIEW);
         }
     }
@@ -766,7 +1078,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
 
     private void browseIdentityFile() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Choose identity file");
+        chooser.setDialogTitle(i18n.tr("settings.identityFile.choose"));
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         Path current = identityPath();
         if (current != null) {
@@ -830,6 +1142,10 @@ public final class VisionPlayerWindow implements AutoCloseable {
     @Override
     public void close() {
         runOnEdt(() -> {
+            if (detachedVideoWindow != null) {
+                detachedVideoWindow.close();
+            }
+            i18n.close();
             themeManager.close();
             frame.dispose();
         });
@@ -900,7 +1216,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         }
     }
 
-    private static Font interfaceFont(float size, int style) {
+    static Font interfaceFont(float size, int style) {
         Font base = UIManager.getFont("Label.font");
         if (base == null) {
             base = new Font(Font.SANS_SERIF, style, Math.round(size));
@@ -963,28 +1279,50 @@ public final class VisionPlayerWindow implements AutoCloseable {
              boolean pairingRequired,
              boolean closeToTray,
              ReceiverSettings settings,
-             SettingsController settingsController) {
+             SettingsController settingsController,
+             Runnable onVideoSurfaceMoved) {
 
         public Config {
              Objects.requireNonNull(receiverName, "receiverName");
              Objects.requireNonNull(settings, "settings");
              Objects.requireNonNull(settingsController, "settingsController");
+             Objects.requireNonNull(onVideoSurfaceMoved, "onVideoSurfaceMoved");
          }
-    }
 
-    private enum ConnectionState {
-        READY("Ready"),
-        CONNECTING("Connecting"),
-        CONNECTED("Connected");
-
-        private final String label;
-
-        ConnectionState(String label) {
-            this.label = label;
+        public Config(String receiverName, int advertisedWidth, int advertisedHeight, int fps,
+                      boolean pairingRequired, boolean closeToTray,
+                      ReceiverSettings settings, SettingsController settingsController) {
+            this(receiverName, advertisedWidth, advertisedHeight, fps, pairingRequired, closeToTray,
+                    settings, settingsController, () -> { });
         }
     }
 
-    private enum TextTone {
+    private enum ConnectionState {
+        READY("Ready", "status.ready"),
+        CONNECTING("Connecting", "status.connecting"),
+        CONNECTED("Connected", "status.connected");
+
+        private final String label;
+        private final String labelKey;
+
+        ConnectionState(String label, String labelKey) {
+            this.label = label;
+            this.labelKey = labelKey;
+        }
+
+        String labelKey() {
+            return labelKey;
+        }
+    }
+
+    /** Text-bearing setting rows tracked for language refresh. */
+    private record SettingRowText(VisionLabel title, VisionLabel description, String titleKey, String descriptionKey) {
+    }
+
+    private record SectionLabelText(VisionLabel label, String key) {
+    }
+
+    enum TextTone {
         PRIMARY,
         SECONDARY,
         TERTIARY
@@ -999,34 +1337,59 @@ public final class VisionPlayerWindow implements AutoCloseable {
         FOLDER
     }
 
-    private record RenderModeChoice(String value, String label) {
+    private record RenderModeChoice(String value, String labelKey, I18n i18n) {
         @Override
         public String toString() {
-            return label;
+            return i18n.tr(labelKey);
         }
     }
 
-    private record GpuAdapterChoice(String value, String label) {
-
-        static GpuAdapterChoice automatic() {
-            return new GpuAdapterChoice("auto", "Automatic (recommended)");
+    private record LanguageChoice(I18n.Language language) {
+        @Override
+        public String toString() {
+            return language.label();
         }
 
-        static GpuAdapterChoice detected(GpuAdapter adapter) {
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof LanguageChoice choice && choice.language == language;
+        }
+
+        @Override
+        public int hashCode() {
+            return language.hashCode();
+        }
+    }
+
+    private record GpuAdapterChoice(String value, String labelKey, String labelArgs, I18n i18n) {
+
+        static GpuAdapterChoice automatic(I18n i18n) {
+            return new GpuAdapterChoice("auto", "settings.gpu.auto", null, i18n);
+        }
+
+        static GpuAdapterChoice detected(GpuAdapter adapter, I18n i18n) {
             String memory = adapter.dedicatedVideoMemory() >= 1024L * 1024L * 1024L
                     ? " · " + adapter.dedicatedVideoMemory() / (1024L * 1024L * 1024L) + " GiB"
                     : "";
-            return new GpuAdapterChoice(Integer.toString(adapter.index()),
-                    "[" + adapter.index() + "] " + adapter.name() + memory);
+            return new GpuAdapterChoice(Integer.toString(adapter.index()), null,
+                    "[" + adapter.index() + "] " + adapter.name() + memory, i18n);
         }
 
-        static GpuAdapterChoice unavailable(String value) {
-            return new GpuAdapterChoice(value, "[" + value + "] Previously configured (not detected)");
+        static GpuAdapterChoice unavailable(String value, I18n i18n) {
+            return new GpuAdapterChoice(value, "settings.gpu.unavailable", value, i18n);
+        }
+
+        String displayLabel() {
+            if (labelKey == null) {
+                return labelArgs;
+            }
+            return MessageFormat.format(i18n.tr(labelKey),
+                    labelArgs == null ? new Object[0] : new Object[]{labelArgs});
         }
 
         @Override
         public String toString() {
-            return label;
+            return displayLabel();
         }
     }
 
@@ -1067,9 +1430,9 @@ public final class VisionPlayerWindow implements AutoCloseable {
             top.add(brand);
             top.add(Box.createVerticalStrut(24));
 
-            receiverButton = new NavButton(palette, "Receiver", NavigationIcon.RECEIVER,
+            receiverButton = new NavButton(palette, i18n.tr("nav.receiver"), NavigationIcon.RECEIVER,
                     event -> selectSection(RECEIVER_VIEW));
-            settingsButton = new NavButton(palette, "Settings", NavigationIcon.SETTINGS,
+            settingsButton = new NavButton(palette, i18n.tr("nav.settings"), NavigationIcon.SETTINGS,
                     event -> selectSection(SETTINGS_VIEW));
             receiverButton.setSelectedState(true);
             top.add(receiverButton);
@@ -1077,6 +1440,14 @@ public final class VisionPlayerWindow implements AutoCloseable {
             top.add(settingsButton);
 
             add(top, BorderLayout.NORTH);
+        }
+
+        void updateLanguage() {
+            brandSubtitle.setText(config.receiverName());
+            brandSubtitle.setToolTipText(config.receiverName());
+            receiverButton.updateLabel(i18n.tr("nav.receiver"));
+            settingsButton.updateLabel(i18n.tr("nav.settings"));
+            repaint();
         }
 
         void setSelectedSection(String section) {
@@ -1171,7 +1542,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         }
     }
 
-    private static final class VisionLabel extends JLabel {
+    static final class VisionLabel extends JLabel {
 
         private final TextTone tone;
         private final Supplier<ThemeManager.ThemePalette> palette;
@@ -1222,8 +1593,8 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private static final class NavButton extends JToggleButton {
 
         private final Supplier<ThemeManager.ThemePalette> palette;
-        private final String label;
         private final NavigationIcon icon;
+        private String label;
         private boolean compact;
 
         NavButton(Supplier<ThemeManager.ThemePalette> palette, String label, NavigationIcon icon,
@@ -1245,6 +1616,12 @@ public final class VisionPlayerWindow implements AutoCloseable {
             setPreferredSize(new Dimension(180, 46));
             setToolTipText(label);
             addActionListener(action);
+        }
+
+        void updateLabel(String label) {
+            this.label = label;
+            setToolTipText(label);
+            repaint();
         }
 
         void setSelectedState(boolean selected) {
@@ -1310,7 +1687,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         }
     }
 
-    private static final class StatusChip extends JPanel {
+    private final class StatusChip extends JPanel {
 
         private final Supplier<ThemeManager.ThemePalette> palette;
         private final boolean pairingRequired;
@@ -1334,8 +1711,13 @@ public final class VisionPlayerWindow implements AutoCloseable {
             repaint();
         }
 
-        private static String accessibleName(ConnectionState state) {
-            return "Receiver status: " + state.label;
+        void updateLanguage() {
+            getAccessibleContext().setAccessibleName(accessibleName(state));
+            repaint();
+        }
+
+        private String accessibleName(ConnectionState state) {
+            return i18n.tr("status.accessible.prefix") + " " + i18n.tr(state.labelKey());
         }
 
         @Override
@@ -1355,7 +1737,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 copy.setFont(interfaceFont(12, Font.BOLD));
                 copy.setColor(colors.textPrimary());
                 FontMetrics metrics = copy.getFontMetrics();
-                copy.drawString(state.label, 29,
+                copy.drawString(i18n.tr(state.labelKey()), 29,
                         (getHeight() + metrics.getAscent() - metrics.getDescent()) / 2);
                 copy.setColor(colors.divider());
                 copy.drawLine(108, 8, 108, getHeight() - 8);
@@ -1363,7 +1745,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 copy.setFont(interfaceFont(11, Font.BOLD));
                 copy.setColor(colors.textSecondary());
                 FontMetrics pairingMetrics = copy.getFontMetrics();
-                copy.drawString(pairingRequired ? "Secure" : "Optional", 140,
+                copy.drawString(pairingRequired ? i18n.tr("status.secure") : i18n.tr("status.optional"), 140,
                         (getHeight() + pairingMetrics.getAscent() - pairingMetrics.getDescent()) / 2);
             } finally {
                 copy.dispose();
@@ -1415,7 +1797,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private static final class InfoChip extends JComponent {
 
         private final Supplier<ThemeManager.ThemePalette> palette;
-        private final String text;
+        private String text;
 
         InfoChip(Supplier<ThemeManager.ThemePalette> palette, String text, int width) {
             this.palette = palette;
@@ -1423,6 +1805,13 @@ public final class VisionPlayerWindow implements AutoCloseable {
             setPreferredSize(new Dimension(width, 31));
             setMinimumSize(getPreferredSize());
             getAccessibleContext().setAccessibleName(text);
+        }
+
+        void setText(String text) {
+            this.text = Objects.requireNonNull(text, "text");
+            getAccessibleContext().setAccessibleName(text);
+            revalidate();
+            repaint();
         }
 
         @Override
@@ -1502,10 +1891,11 @@ public final class VisionPlayerWindow implements AutoCloseable {
         }
     }
 
-    private static final class ThemeSelector extends GlassPanel {
+    private final class ThemeSelector extends GlassPanel {
 
         private final ThemeManager manager;
         private final JToggleButton[] buttons;
+        private final ThemeChoiceButton[] choiceButtons;
 
         ThemeSelector(Supplier<ThemeManager.ThemePalette> palette, ThemeManager manager) {
             super(palette, 8, false);
@@ -1518,6 +1908,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
             ButtonGroup group = new ButtonGroup();
             ThemeManager.ThemeMode[] modes = ThemeManager.ThemeMode.values();
             buttons = new JToggleButton[modes.length];
+            choiceButtons = new ThemeChoiceButton[modes.length];
             for (int index = 0; index < modes.length; index++) {
                 ThemeManager.ThemeMode mode = modes[index];
                 ThemeChoiceButton button = new ThemeChoiceButton(palette, mode);
@@ -1525,6 +1916,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 group.add(button);
                 add(button);
                 buttons[index] = button;
+                choiceButtons[index] = button;
             }
             syncSelection();
         }
@@ -1536,23 +1928,44 @@ public final class VisionPlayerWindow implements AutoCloseable {
             }
             repaint();
         }
+
+        void updateLanguage() {
+            for (ThemeChoiceButton button : choiceButtons) {
+                button.updateLabel(i18n.tr(button.mode().labelKey()));
+            }
+            repaint();
+        }
     }
 
-    private static final class ThemeChoiceButton extends JToggleButton {
+    private final class ThemeChoiceButton extends JToggleButton {
 
         private final Supplier<ThemeManager.ThemePalette> palette;
         private final ThemeManager.ThemeMode mode;
+        private String label;
 
         ThemeChoiceButton(Supplier<ThemeManager.ThemePalette> palette, ThemeManager.ThemeMode mode) {
-            super(mode.label());
+            super(i18n.tr(mode.labelKey()));
             this.palette = palette;
             this.mode = mode;
+            this.label = i18n.tr(mode.labelKey());
             setFont(interfaceFont(11, Font.BOLD));
             setBorder(null);
             setContentAreaFilled(false);
             setFocusPainted(false);
             setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            setToolTipText(mode == ThemeManager.ThemeMode.SYSTEM ? "Follow the operating system appearance" : null);
+            setToolTipText(mode == ThemeManager.ThemeMode.SYSTEM ? i18n.tr("settings.theme.system.tooltip") : null);
+        }
+
+        ThemeManager.ThemeMode mode() {
+            return mode;
+        }
+
+        void updateLabel(String label) {
+            this.label = label;
+            if (mode == ThemeManager.ThemeMode.SYSTEM) {
+                setToolTipText(i18n.tr("settings.theme.system.tooltip"));
+            }
+            repaint();
         }
 
         @Override
@@ -1571,9 +1984,9 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 copy.setFont(getFont());
                 copy.setColor(isSelected() ? colors.selectedText() : colors.textSecondary());
                 FontMetrics metrics = copy.getFontMetrics();
-                int x = (getWidth() - metrics.stringWidth(mode.label())) / 2;
+                int x = (getWidth() - metrics.stringWidth(label)) / 2;
                 int y = (getHeight() + metrics.getAscent() - metrics.getDescent()) / 2;
-                copy.drawString(mode.label(), x, y);
+                copy.drawString(label, x, y);
                 if (isFocusOwner()) {
                     copy.setColor(colors.accent());
                     copy.setStroke(new BasicStroke(1.5f));

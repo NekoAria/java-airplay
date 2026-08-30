@@ -32,7 +32,7 @@ public class Pairing {
     private byte[] ecdhTheirs;
     private byte[] ecdhSecret;
 
-    private boolean pairVerified;
+    private volatile boolean pairVerified;
 
     public Pairing() {
         this(new KeyPairGenerator().generateKeyPair());

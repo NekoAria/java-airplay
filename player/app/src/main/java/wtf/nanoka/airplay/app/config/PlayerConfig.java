@@ -18,6 +18,8 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.function.Supplier;
+
 @Configuration
 @EnableConfigurationProperties(PlayerProperties.class)
 public class PlayerConfig {
@@ -84,14 +86,32 @@ public class PlayerConfig {
     @Bean
     @ConditionalOnProperty(value = "player.tray.enabled", havingValue = "true", matchIfMissing = true)
     public SystemTrayMenu systemTrayMenu(ApplicationContext context, AirPlayConsumer airPlayConsumer) {
-        Runnable showWindow = airPlayConsumer instanceof GstPlayerSwing swing ? swing::showWindow : null;
-        Runnable trayReady = airPlayConsumer instanceof GstPlayerSwing swing
+        GstPlayerSwing swing = airPlayConsumer instanceof GstPlayerSwing player ? player : null;
+        Runnable showWindow = swing != null ? swing::showWindow : null;
+        Runnable showDetachedVideo = swing != null ? swing::showDetachedVideo : null;
+        Runnable toggleVideoFullscreen = swing != null
+                ? swing::toggleVideoFullscreen : null;
+        Runnable toggleLanguage = swing != null ? swing::toggleLanguage : null;
+        Supplier<SystemTrayMenu.Labels> labels = swing != null ? () -> new SystemTrayMenu.Labels(
+                swing.localized("tray.open"),
+                swing.localized("tray.videoWindow"),
+                swing.localized("tray.videoWindow.fullscreen"),
+                swing.localized("tray.language"),
+                swing.languageLabel(),
+                swing.localized("tray.quit"),
+                "Java AirPlay") : null;
+        Runnable trayReady = swing != null
                 ? () -> swing.setCloseToTray(true)
                 : null;
-        Runnable trayUnavailable = airPlayConsumer instanceof GstPlayerSwing swing
+        Runnable trayUnavailable = swing != null
                 ? () -> swing.setCloseToTray(false)
                 : null;
-        return new SystemTrayMenu(context, showWindow, trayReady, trayUnavailable);
+        SystemTrayMenu tray = new SystemTrayMenu(context, showWindow, showDetachedVideo, toggleVideoFullscreen,
+                toggleLanguage, labels, trayReady, trayUnavailable);
+        if (swing != null) {
+            swing.addLanguageChangeListener(tray::updateLabels);
+        }
+        return tray;
     }
 
     @Bean

@@ -21,11 +21,15 @@ Build and test from source:
 .\gradlew.bat :player:app:bootJar
 ```
 
-The executable JAR is `player/app/build/libs/java-airplay-server-1.0.7.jar`.
+The executable JAR is `player/app/build/libs/java-airplay-server-1.0.8.jar`.
 
 ## Desktop UI
 
 The integrated GStreamer window provides receiver status and settings. It can select a detected Windows DXGI GPU by its real name, while storing the corresponding DXGI index in configuration. `Save & Restart` validates and relaunches the current process so network and pipeline changes take effect.
+
+- **Language**: English / 中文, switched live from Settings → Language or the tray menu (persisted per user).
+- **Detached video window**: in integrated-window mode the Receiver page video can be detached into its own window (tray: Show video window) and toggled full screen (ESC exits).
+- The system tray also keeps **Open Java AirPlay**, **Show video window**, **Full screen**, **Language**, and **Quit**, so the GUI stays reachable when the integrated window is closed.
 
 Settings are stored in:
 

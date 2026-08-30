@@ -15,7 +15,7 @@ import wtf.nanoka.airplay.player.gstreamer.ui.VisionPlayerWindow;
 public class GstPlayerSwing extends GstPlayer {
 
     private final VisionPlayerWindow window;
-    private final long videoWindowHandle;
+    private volatile long videoWindowHandle;
 
     public GstPlayerSwing(int fps,
                           int videoQueueDepth,
@@ -37,7 +37,8 @@ public class GstPlayerSwing extends GstPlayer {
                 options.pairingRequired(),
                 options.closeToTray(),
                 options.settings(),
-                options.settingsController()));
+                options.settingsController(),
+                this::restartVideoPipelines));
         videoWindowHandle = Native.getComponentID(window.videoCanvas());
         h264Pipeline.getBus().setSyncHandler(this::handleSyncMessage);
         if (hevcPipeline != null) {
@@ -75,6 +76,18 @@ public class GstPlayerSwing extends GstPlayer {
         }
     }
 
+    /**
+     * The video canvas moved between the main window and the detached video
+     * window. The D3D sink keeps the old native surface, so the whole video
+     * pipeline is stopped and restarted to re-bind the new window handle.
+     */
+    private void restartVideoPipelines() {
+        videoWindowHandle = Native.getComponentID(window.videoCanvas());
+        if (restartActiveVideoPipeline()) {
+            log.info("Restarted the video pipeline for the moved video surface");
+        }
+    }
+
     @Override
     public void onVideoFormatDetected(VideoStreamInfo videoStreamInfo) {
         window.showVideoFormatDetected(videoStreamInfo);
@@ -95,6 +108,30 @@ public class GstPlayerSwing extends GstPlayer {
 
     public void showWindow() {
         window.showWindow();
+    }
+
+    public void showDetachedVideo() {
+        window.showDetachedVideo();
+    }
+
+    public void toggleVideoFullscreen() {
+        window.toggleVideoFullscreen();
+    }
+
+    public void toggleLanguage() {
+        window.toggleLanguage();
+    }
+
+    public String languageLabel() {
+        return window.languageLabel();
+    }
+
+    public String localized(String key) {
+        return window.localized(key);
+    }
+
+    public void addLanguageChangeListener(Runnable listener) {
+        window.addLanguageChangeListener(listener);
     }
 
     public void setCloseToTray(boolean closeToTray) {

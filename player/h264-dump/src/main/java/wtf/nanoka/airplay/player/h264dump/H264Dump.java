@@ -26,7 +26,10 @@ public class H264Dump implements AirPlayConsumer {
     @Override
     public void onVideo(byte[] bytes) {
         try {
-            videoFileChannel.write(ByteBuffer.wrap(bytes));
+            ByteBuffer buffer = ByteBuffer.wrap(bytes);
+            while (buffer.hasRemaining()) {
+                videoFileChannel.write(buffer);
+            }
         } catch (IOException e) {
             log.warn("Unable to write H.264 dump: {}", e.getMessage());
         }

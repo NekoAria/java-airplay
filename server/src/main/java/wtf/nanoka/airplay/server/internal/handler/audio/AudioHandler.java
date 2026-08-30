@@ -11,9 +11,12 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 public class AudioHandler extends ChannelInboundHandlerAdapter {
+
+    private static final long RESEND_THROTTLE_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     private final AirPlay airPlay;
     private final AirPlayConsumer dataConsumer;
@@ -97,7 +100,7 @@ public class AudioHandler extends ChannelInboundHandlerAdapter {
 
     private void requestResend(int sequenceNumber, int count) {
         long now = System.nanoTime();
-        if (lastResendSequence != sequenceNumber || now - lastResendNanos >= 5_000_000L) {
+        if (lastResendSequence != sequenceNumber || now - lastResendNanos >= RESEND_THROTTLE_NANOS) {
             resendRequester.request(sequenceNumber, count);
             lastResendSequence = sequenceNumber;
             lastResendNanos = now;

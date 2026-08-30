@@ -3,21 +3,23 @@ package wtf.nanoka.airplay.player.gstreamer;
 import java.util.Locale;
 
 public enum VideoRenderMode {
-    BALANCED("balanced", "Balanced", 3, "downstream", true, true),
-    QUALITY("quality", "Quality", 8, "no", true, false),
-    LOW_LATENCY("low-latency", "Low latency", 1, "downstream", false, false);
+    BALANCED("balanced", "Balanced", "renderMode.balanced", 3, "downstream", true, true),
+    QUALITY("quality", "Quality", "renderMode.quality", 8, "no", true, false),
+    LOW_LATENCY("low-latency", "Low latency", "renderMode.lowLatency", 1, "downstream", false, false);
 
     private final String propertyValue;
     private final String label;
+    private final String labelKey;
     private final int decodedQueueDepth;
     private final String queueLeakMode;
     private final boolean synchronizedPresentation;
     private final boolean qos;
 
-    VideoRenderMode(String propertyValue, String label, int decodedQueueDepth, String queueLeakMode,
-                    boolean synchronizedPresentation, boolean qos) {
+    VideoRenderMode(String propertyValue, String label, String labelKey, int decodedQueueDepth,
+                    String queueLeakMode, boolean synchronizedPresentation, boolean qos) {
         this.propertyValue = propertyValue;
         this.label = label;
+        this.labelKey = labelKey;
         this.decodedQueueDepth = decodedQueueDepth;
         this.queueLeakMode = queueLeakMode;
         this.synchronizedPresentation = synchronizedPresentation;
@@ -30,6 +32,11 @@ public enum VideoRenderMode {
 
     public String label() {
         return label;
+    }
+
+    /** Key into the UI message bundle; use with an I18n instance for localized labels. */
+    public String labelKey() {
+        return labelKey;
     }
 
     String queueProperties() {

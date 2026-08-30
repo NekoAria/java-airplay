@@ -21,11 +21,15 @@ start.bat
 .\gradlew.bat :player:app:bootJar
 ```
 
-可执行 JAR 位于 `player/app/build/libs/java-airplay-server-1.0.7.jar`。
+可执行 JAR 位于 `player/app/build/libs/java-airplay-server-1.0.8.jar`。
 
 ## 桌面界面
 
 集成 GStreamer 窗口提供接收状态和完整设置。Windows 的 GPU 下拉框会显示真实 DXGI 显卡名称，保存时仍写入对应的 DXGI index。`Save & Restart` 会验证配置并自动重启当前进程，使网络和管线设置立即生效。
+
+- **语言**：英文 / 中文，在「设置 → 语言」或系统托盘菜单中即时切换（按用户持久保存）。
+- **独立视频窗口**：集成窗口模式下，Receiver 页面的画面可分离到独立窗口（托盘：显示视频窗口），并支持全屏（ESC 退出）。
+- 系统托盘保留「打开 Java AirPlay / 显示视频窗口 / 全屏 / 语言 / 退出」，集成窗口关闭后仍可随时重新打开 GUI。
 
 设置文件：
 
