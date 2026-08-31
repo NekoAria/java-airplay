@@ -2,7 +2,7 @@
 set -eu
 
 WORKSPACE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-JAR_PATH=${JAR_PATH:-"$WORKSPACE/player/app/build/libs/java-airplay-server-1.0.8.jar"}
+JAR_PATH=${JAR_PATH:-"$WORKSPACE/player/app/build/libs/java-airplay-server-1.0.9.jar"}
 
 JAVA_VERSION=$(java -version 2>&1 | sed -n '1p')
 case "$JAVA_VERSION" in

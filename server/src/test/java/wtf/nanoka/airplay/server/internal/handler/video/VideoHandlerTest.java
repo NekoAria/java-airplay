@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -95,6 +96,69 @@ class VideoHandlerTest {
 
         assertFalse(channel.isActive());
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void measuresStableSenderFrameRateFromRecentTimestamps() {
+        var consumer = new RecordingConsumer();
+        var handler = configuredHandler(consumer);
+
+        sendFrames(handler, 0, 1, 60);
+
+        assertNotNull(consumer.detectedFormat);
+        assertEquals(60, consumer.detectedFormat.getFps(), 0.01);
+    }
+
+    @Test
+    void rollingMeasurementTracksSenderFrameRateChanges() {
+        var consumer = new RecordingConsumer();
+        var handler = configuredHandler(consumer);
+
+        sendFrames(handler, 0, 2, 60);
+        sendFrames(handler, 2, 2, 30);
+
+        assertEquals(30, consumer.detectedFormat.getFps(), 0.01);
+    }
+
+    @Test
+    void timestampDiscontinuityStartsANewMeasurementWindow() {
+        var consumer = new RecordingConsumer();
+        var handler = configuredHandler(consumer);
+
+        sendFrames(handler, 0, 1, 60);
+        sendFrames(handler, 5, 1, 30);
+
+        assertEquals(30, consumer.detectedFormat.getFps(), 0.01);
+    }
+
+    private static VideoHandler configuredHandler(RecordingConsumer consumer) {
+        byte[] sps = {
+                0x27, 0x64, 0x00, 0x1f, (byte) 0xac, 0x13, 0x14, 0x50,
+                0x54, 0x16, (byte) 0xfa, (byte) 0xe6, (byte) 0xe0, 0x20,
+                0x20, 0x20, 0x40
+        };
+        byte[] configuration = avcConfiguration(sps, new byte[]{0x28, 1, 2});
+        var handler = new VideoHandler(new NoopAirPlay(), consumer);
+        handler.channelRead(null, new VideoPacket(1, configuration.length, 0, configuration));
+        return handler;
+    }
+
+    private static void sendFrames(VideoHandler handler, double startSeconds,
+                                   double durationSeconds, int fps) {
+        int frameCount = (int) Math.round(durationSeconds * fps);
+        for (int frame = 0; frame <= frameCount; frame++) {
+            if (startSeconds > 0 && frame == 0) {
+                continue;
+            }
+            byte[] accessUnit = {0, 0, 0, 1, 0x41, 1};
+            double seconds = startSeconds + (double) frame / fps;
+            handler.channelRead(null, new VideoPacket(0, accessUnit.length,
+                    fixedPointTimestamp(seconds), accessUnit));
+        }
+    }
+
+    private static long fixedPointTimestamp(double seconds) {
+        return Math.round(seconds * 4_294_967_296.0);
     }
 
     private static byte[] avcConfiguration(byte[] sps, byte[] pps) {

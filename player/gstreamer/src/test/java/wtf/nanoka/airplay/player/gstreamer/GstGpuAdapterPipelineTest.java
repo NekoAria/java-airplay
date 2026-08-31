@@ -53,6 +53,7 @@ class GstGpuAdapterPipelineTest {
                 "d3d12h264dec", Integer.toString(selected.index()));
         assertTrue(configuredPipeline.contains("! " + decoderName + " !"));
         assertTrue(configuredPipeline.contains("d3d12videosink adapter=" + selected.index()));
+        assertTrue(configuredPipeline.contains("error-on-closed=false"));
         assertTrue(configuredPipeline.indexOf("! " + decoderName + " !")
                 < configuredPipeline.indexOf("! queue "));
         assertTrue(configuredPipeline.contains("sync=true"));

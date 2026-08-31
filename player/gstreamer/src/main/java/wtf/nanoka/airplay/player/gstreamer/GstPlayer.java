@@ -15,6 +15,8 @@ import java.util.concurrent.LinkedBlockingDeque;
 @Slf4j
 public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
 
+    private static final long VIDEO_BACKPRESSURE_WARNING_NANOS = TimeUnit.SECONDS.toNanos(5);
+
     static {
         GstPlayerUtils.configurePaths();
         GLib.setEnv("GST_DEBUG", "3", true);
@@ -38,6 +40,7 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
     private final LinkedBlockingDeque<TimedMedia> audioQueue = new LinkedBlockingDeque<>(32);
     private final Object hlsLock = new Object();
     private final int videoQueueDepth;
+    private final boolean aggressiveFrameDropping;
     private final long configuredVideoFrameDurationNanos;
     private volatile int audioSampleRate = 44100;
     private volatile int audioSamplesPerFrame = 480;
@@ -52,6 +55,7 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
     protected final Object videoTransitionLock = new Object();
     private int videoPushesInFlight;
     private int audioPushesInFlight;
+    private volatile long lastVideoBackpressureWarningNanos;
     private volatile boolean closed;
     private final Thread videoFeeder;
     private final Thread audioFeeder;
@@ -70,7 +74,13 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
 
     protected GstPlayer(int fps, int videoQueueDepth, String h264PipelineDescription,
                         String hevcPipelineDescription) {
+        this(fps, videoQueueDepth, h264PipelineDescription, hevcPipelineDescription, false);
+    }
+
+    protected GstPlayer(int fps, int videoQueueDepth, String h264PipelineDescription,
+                        String hevcPipelineDescription, boolean aggressiveFrameDropping) {
         this.videoQueueDepth = Math.max(1, videoQueueDepth);
+        this.aggressiveFrameDropping = aggressiveFrameDropping;
         videoQueue = new LinkedBlockingDeque<>(this.videoQueueDepth);
         configuredVideoFrameDurationNanos = TimeUnit.SECONDS.toNanos(1) / Math.max(1, fps);
         h264Pipeline = h264PipelineDescription == null
@@ -115,6 +125,9 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
 
         videoFeeder = Thread.ofPlatform().name("gstreamer-video-feeder").daemon(true).start(this::feedVideo);
         audioFeeder = Thread.ofPlatform().name("gstreamer-audio-feeder").daemon(true).start(this::feedAudio);
+        if (aggressiveFrameDropping) {
+            log.warn("Experimental aggressive encoded-frame dropping is enabled; predicted frames may corrupt");
+        }
     }
 
     protected abstract Pipeline createH264Pipeline();
@@ -171,16 +184,23 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
             media = new TimedMedia(accessUnit, timestamp, activeVideoSrc, videoGeneration);
         }
         try {
-            if (!videoQueue.offerLast(media, 500, TimeUnit.MILLISECONDS)) {
-                throw new IllegalStateException("GStreamer video input remained blocked for 500 ms");
-            }
-            synchronized (this) {
-                if (closed || media.generation() != videoGeneration || media.source() != activeVideoSrc) {
-                    videoQueue.remove(media);
+            if (aggressiveFrameDropping) {
+                offerLatest(videoQueue, media);
+            } else {
+                // Preserve every encoded reference frame. TCP backpressure is safer than corrupting the decoder DPB.
+                if (!videoQueue.offerLast(media, 500, TimeUnit.MILLISECONDS)) {
+                    logVideoBackpressure();
+                    videoQueue.putLast(media);
                 }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return;
+        }
+        synchronized (this) {
+            if (closed || media.generation() != videoGeneration || media.source() != activeVideoSrc) {
+                videoQueue.remove(media);
+            }
         }
     }
 
@@ -396,15 +416,23 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
         }
     }
 
+    private void logVideoBackpressure() {
+        long now = System.nanoTime();
+        if (now - lastVideoBackpressureWarningNanos >= VIDEO_BACKPRESSURE_WARNING_NANOS) {
+            lastVideoBackpressureWarningNanos = now;
+            log.warn("GStreamer video input is backpressured; preserving encoded frames and waiting for capacity");
+        }
+    }
+
     private void configureVideoSource(AppSrc source, String caps) {
         source.setStreamType(AppSrc.StreamType.STREAM);
         source.setCaps(Caps.fromString(caps));
         source.set("is-live", true);
         source.set("format", Format.TIME);
         source.set("emit-signals", false);
-        source.set("block", true);
+        source.set("block", !aggressiveFrameDropping);
         source.set("max-buffers", (long) videoQueueDepth);
-        source.set("leaky-type", 0);
+        source.set("leaky-type", aggressiveFrameDropping ? 2 : 0);
         source.setMaxBytes(4 * 1024 * 1024);
     }
 

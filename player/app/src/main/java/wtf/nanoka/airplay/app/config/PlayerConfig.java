@@ -38,6 +38,7 @@ public class PlayerConfig {
                 gstreamer.getGpuAdapter(),
                 gstreamer.getRenderMode(),
                 airPlayConfig.isHevc(),
+                gstreamer.isAggressiveFrameDropping(),
                 new GstPlayerSwing.WindowOptions(
                         airPlayConfig.getServerName(),
                         airPlayConfig.getResolvedWidth(),
@@ -48,7 +49,7 @@ public class PlayerConfig {
                         settingsController))
                 : new GstPlayerDefault(airPlayConfig.getResolvedFps(), gstreamer.getVideoQueueDepth(),
                 gstreamer.getVideoDecoder(), gstreamer.getGpuAdapter(), gstreamer.getRenderMode(),
-                airPlayConfig.isHevc());
+                airPlayConfig.isHevc(), gstreamer.isAggressiveFrameDropping());
     }
 
     @Bean
@@ -137,6 +138,7 @@ public class PlayerConfig {
                 gstreamer.getVideoDecoder(),
                 gstreamer.getGpuAdapter(),
                 gstreamer.getVideoQueueDepth(),
+                gstreamer.isAggressiveFrameDropping(),
                 gstreamer.getRenderMode());
     }
 

@@ -90,6 +90,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private CardLayout cardLayout;
     private JPanel cardPanel;
     private JPanel videoFrame;
+    private VideoSurfacePanel videoSurface;
     private Canvas videoCanvas;
     private VisionLabel detachedHint;
     private ActionButton detachButton;
@@ -122,6 +123,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
     private JComboBox<String> decoderCombo;
     private JComboBox<GpuAdapterChoice> gpuAdapterCombo;
     private JSpinner videoQueueSpinner;
+    private VisionToggle aggressiveFrameDroppingToggle;
     private JComboBox<RenderModeChoice> renderModeCombo;
     private JComboBox<LanguageChoice> languageCombo;
     private VisionLabel settingsStatus;
@@ -162,7 +164,9 @@ public final class VisionPlayerWindow implements AutoCloseable {
     /** Moves the detached video canvas back into the main window (EDT). */
     private void attachCanvasToMain() {
         videoFrame.removeAll();
-        videoFrame.add(videoCanvas, BorderLayout.CENTER);
+        videoSurface.add(videoCanvas);
+        videoFrame.add(videoSurface, BorderLayout.CENTER);
+        videoSurface.setBackground(palette().videoSurface());
         videoCanvas.setBackground(palette().videoSurface());
         videoCanvas.setFocusable(false);
         updateDetachControls();
@@ -189,7 +193,6 @@ public final class VisionPlayerWindow implements AutoCloseable {
 
     private void attachCanvasBack() {
         detachedVideoWindow.detachCanvas();
-        attachCanvasToMain();
         SwingUtilities.invokeLater(videoSurfaceMoved);
     }
 
@@ -208,12 +211,15 @@ public final class VisionPlayerWindow implements AutoCloseable {
     public void showVideoFormatDetected(VideoStreamInfo streamInfo) {
         runOnEdt(() -> {
             if (connected) {
+                currentVideoStream = streamInfo;
+                updateVideoAspect(streamInfo);
                 updateVideoDetails(streamInfo);
                 return;
             }
             connected = false;
             connectionState = ConnectionState.CONNECTING;
             currentVideoStream = streamInfo;
+            updateVideoAspect(streamInfo);
             statusChip.setState(ConnectionState.CONNECTING);
             idleTitle.setText(i18n.tr("receiver.preparing"));
             idleSubtitle.setText(i18n.tr("receiver.connecting"));
@@ -232,6 +238,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
             connected = true;
             connectionState = ConnectionState.CONNECTED;
             currentVideoStream = streamInfo;
+            updateVideoAspect(streamInfo);
             statusChip.setState(ConnectionState.CONNECTED);
             headerTitle.setText(i18n.tr("frame.screenMirroring"));
 
@@ -272,6 +279,12 @@ public final class VisionPlayerWindow implements AutoCloseable {
 
     private void updateVideoDetails(VideoStreamInfo streamInfo) {
         videoDetails.setText(detailsText(streamInfo));
+    }
+
+    private void updateVideoAspect(VideoStreamInfo streamInfo) {
+        int width = streamInfo.getWidth() > 0 ? streamInfo.getWidth() : config.advertisedWidth();
+        int height = streamInfo.getHeight() > 0 ? streamInfo.getHeight() : config.advertisedHeight();
+        videoSurface.setAspectRatio(width, height);
     }
 
     private String detailsText(VideoStreamInfo streamInfo) {
@@ -397,6 +410,10 @@ public final class VisionPlayerWindow implements AutoCloseable {
             if (swingToggle != null) {
                 swingToggle.setToolTipText(i18n.tr("settings.integratedWindow.tooltip"));
             }
+            if (aggressiveFrameDroppingToggle != null) {
+                aggressiveFrameDroppingToggle.setToolTipText(
+                        i18n.tr("settings.aggressiveFrameDropping.tooltip"));
+            }
             if (trayToggle != null) {
                 trayToggle.setToolTipText(i18n.tr("settings.systemTray.tooltip"));
             }
@@ -436,6 +453,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         setAccessibleName(decoderCombo, "settings.videoDecoder");
         setAccessibleName(gpuAdapterCombo, "settings.gpuAdapter");
         setAccessibleName(videoQueueSpinner, "settings.videoBuffer");
+        setAccessibleName(aggressiveFrameDroppingToggle, "settings.aggressiveFrameDropping");
         setAccessibleName(audioJitterSpinner, "settings.audioJitter");
         setAccessibleName(swingToggle, "settings.integratedWindow");
         setAccessibleName(trayToggle, "settings.systemTray");
@@ -563,10 +581,13 @@ public final class VisionPlayerWindow implements AutoCloseable {
 
         videoFrame = new JPanel(new BorderLayout());
         videoFrame.setBorder(BorderFactory.createEmptyBorder(3, 3, 3, 3));
+        videoSurface = new VideoSurfacePanel();
+        videoSurface.setBackground(palette().videoSurface());
         videoCanvas = new Canvas();
         videoCanvas.setBackground(palette().videoSurface());
         videoCanvas.setFocusable(false);
-        videoFrame.add(videoCanvas, BorderLayout.CENTER);
+        videoSurface.add(videoCanvas);
+        videoFrame.add(videoSurface, BorderLayout.CENTER);
 
         detachedHint = label(i18n.tr("video.detachedHint"), 14, Font.PLAIN, TextTone.SECONDARY);
         detachedHint.setHorizontalAlignment(SwingConstants.CENTER);
@@ -576,8 +597,8 @@ public final class VisionPlayerWindow implements AutoCloseable {
 
         GlassPanel informationBar = new GlassPanel(this::palette, 8, false);
         informationBar.setLayout(new BorderLayout());
-        informationBar.setBorder(BorderFactory.createEmptyBorder(10, 15, 10, 15));
-        informationBar.setPreferredSize(new Dimension(100, 44));
+        informationBar.setBorder(BorderFactory.createEmptyBorder(8, 15, 8, 15));
+        informationBar.setPreferredSize(new Dimension(100, 54));
         videoDetails = label(i18n.tr("video.waiting"), 12, Font.PLAIN, TextTone.SECONDARY);
         informationBar.add(videoDetails, BorderLayout.WEST);
 
@@ -734,6 +755,14 @@ public final class VisionPlayerWindow implements AutoCloseable {
         videoQueueSpinner = numberSpinner(savedSettings.videoQueueDepth(), 1, 16, 1, 86);
         settingsStack.add(settingRow("settings.videoBuffer", "settings.videoBuffer.description",
                 videoQueueSpinner));
+
+        aggressiveFrameDroppingToggle = new VisionToggle(
+                this::palette, savedSettings.aggressiveFrameDropping());
+        aggressiveFrameDroppingToggle.setToolTipText(
+                i18n.tr("settings.aggressiveFrameDropping.tooltip"));
+        settingsStack.add(settingRow(
+                "settings.aggressiveFrameDropping", "settings.aggressiveFrameDropping.description",
+                aggressiveFrameDroppingToggle));
 
         audioJitterSpinner = numberSpinner(savedSettings.audioJitterPackets(), 1, 64, 1, 86);
         settingsStack.add(settingRow("settings.audioJitter", "settings.audioJitter.description",
@@ -899,6 +928,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 comboValue(decoderCombo),
                 selectedGpuAdapter(),
                 (Integer) videoQueueSpinner.getValue(),
+                aggressiveFrameDroppingToggle.isSelected(),
                 renderMode == null ? VideoRenderMode.BALANCED.propertyValue() : renderMode.value());
     }
 
@@ -917,6 +947,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         decoderCombo.setSelectedItem(settings.videoDecoder());
         selectGpuAdapter(settings.gpuAdapter());
         videoQueueSpinner.setValue(settings.videoQueueDepth());
+        aggressiveFrameDroppingToggle.setSelected(settings.aggressiveFrameDropping());
         selectRenderMode(settings.renderMode());
         settingsStatus.setText("");
         updateSettingsAvailability();
@@ -956,6 +987,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         decoderCombo.setEnabled(gstreamer);
         gpuAdapterCombo.setEnabled(gstreamer);
         videoQueueSpinner.setEnabled(gstreamer);
+        aggressiveFrameDroppingToggle.setEnabled(gstreamer);
         swingToggle.setEnabled(gstreamer);
         hevcToggle.setEnabled(gstreamer);
         if (!gstreamer) {
@@ -1064,6 +1096,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
         if (root == null) {
             return;
         }
+        videoSurface.setBackground(palette().videoSurface());
         videoCanvas.setBackground(palette().videoSurface());
         if (themeSelector != null) {
             themeSelector.syncSelection();
@@ -1181,6 +1214,44 @@ public final class VisionPlayerWindow implements AutoCloseable {
         JPanel panel = new JPanel(layout);
         panel.setOpaque(false);
         return panel;
+    }
+
+    /** Keeps the native video child at the stream aspect ratio while using all available space. */
+    static final class VideoSurfacePanel extends JPanel {
+
+        private double aspectRatio = 16.0 / 9.0;
+
+        VideoSurfacePanel() {
+            setLayout(null);
+            setOpaque(true);
+        }
+
+        void setAspectRatio(int width, int height) {
+            if (width > 0 && height > 0) {
+                aspectRatio = (double) width / height;
+                revalidate();
+                repaint();
+            }
+        }
+
+        @Override
+        public void doLayout() {
+            if (getComponentCount() == 0) {
+                return;
+            }
+            Insets insets = getInsets();
+            int availableWidth = Math.max(1, getWidth() - insets.left - insets.right);
+            int availableHeight = Math.max(1, getHeight() - insets.top - insets.bottom);
+            int width = availableWidth;
+            int height = (int) Math.round(width / aspectRatio);
+            if (height > availableHeight) {
+                height = availableHeight;
+                width = (int) Math.round(height * aspectRatio);
+            }
+            int x = insets.left + (availableWidth - width) / 2;
+            int y = insets.top + (availableHeight - height) / 2;
+            getComponent(0).setBounds(x, y, Math.max(1, width), Math.max(1, height));
+        }
     }
 
     private static final class VerticalScrollPanel extends JPanel implements Scrollable {
@@ -1643,7 +1714,7 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 enableQuality(copy);
                 ThemeManager.ThemePalette colors = palette.get();
                 if (isSelected() || getModel().isRollover() || getModel().isArmed()) {
-                    copy.setColor(isSelected() ? colors.controlHover() : colors.control());
+                    copy.setColor(isSelected() ? colors.selected() : colors.control());
                     copy.fill(new RoundRectangle2D.Double(0, 1, getWidth(), getHeight() - 2, 8, 8));
                 }
                 if (isFocusOwner()) {
@@ -1651,11 +1722,11 @@ public final class VisionPlayerWindow implements AutoCloseable {
                     copy.setStroke(new BasicStroke(1.5f));
                     copy.draw(new RoundRectangle2D.Double(1, 2, getWidth() - 2, getHeight() - 4, 8, 8));
                 }
-                Color iconColor = isSelected() ? colors.accent() : colors.textSecondary();
+                Color iconColor = isSelected() ? colors.selectedText() : colors.textSecondary();
                 drawNavigationIcon(copy, icon, 15, 14, iconColor);
                 if (!compact) {
                     copy.setFont(getFont());
-                    copy.setColor(isSelected() ? colors.accent() : colors.textSecondary());
+                    copy.setColor(isSelected() ? colors.selectedText() : colors.textSecondary());
                     FontMetrics metrics = copy.getFontMetrics();
                     copy.drawString(label, 47, (getHeight() + metrics.getAscent() - metrics.getDescent()) / 2);
                 }
@@ -2121,15 +2192,15 @@ public final class VisionPlayerWindow implements AutoCloseable {
 
         private final Supplier<ThemeManager.ThemePalette> palette;
         private final boolean primary;
+        private final int baseWidth;
 
         ActionButton(Supplier<ThemeManager.ThemePalette> palette, String label, int width, boolean primary) {
             super(label);
             this.palette = palette;
             this.primary = primary;
+            this.baseWidth = width;
             setFont(interfaceFont(12, Font.BOLD));
-            setPreferredSize(new Dimension(width, 38));
-            setMinimumSize(getPreferredSize());
-            setMaximumSize(getPreferredSize());
+            updateTextSize();
             setMargin(new Insets(6, 12, 7, 12));
             setHorizontalAlignment(SwingConstants.CENTER);
             setVerticalAlignment(SwingConstants.CENTER);
@@ -2137,6 +2208,24 @@ public final class VisionPlayerWindow implements AutoCloseable {
             setContentAreaFilled(false);
             setFocusPainted(false);
             setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        }
+
+        @Override
+        public void setText(String text) {
+            super.setText(text);
+            if (palette != null) {
+                updateTextSize();
+            }
+        }
+
+        private void updateTextSize() {
+            int textWidth = getFont() == null || getText() == null
+                    ? 0 : getFontMetrics(getFont()).stringWidth(getText());
+            int width = Math.max(baseWidth, textWidth + 28);
+            Dimension size = new Dimension(width, 38);
+            setPreferredSize(size);
+            setMinimumSize(size);
+            setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
         }
 
         @Override
@@ -2150,12 +2239,16 @@ public final class VisionPlayerWindow implements AutoCloseable {
                         ? colors.accent()
                         : getModel().isRollover() ? colors.controlHover() : colors.control());
                 copy.fill(new RoundRectangle2D.Double(0, 0, getWidth(), getHeight(), 8, 8));
+                copy.setFont(getFont());
+                copy.setColor(!isEnabled() ? colors.textPrimary()
+                        : primary ? Color.WHITE : colors.textPrimary());
+                FontMetrics metrics = copy.getFontMetrics();
+                int textX = (getWidth() - metrics.stringWidth(getText())) / 2;
+                int textY = (getHeight() + metrics.getAscent() - metrics.getDescent()) / 2;
+                copy.drawString(getText(), textX, textY);
             } finally {
                 copy.dispose();
             }
-            setForeground(!isEnabled() ? colors.textTertiary()
-                    : primary ? Color.WHITE : colors.textPrimary());
-            super.paintComponent(graphics);
             if (isFocusOwner()) {
                 Graphics2D focus = (Graphics2D) graphics.create();
                 try {

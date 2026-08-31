@@ -67,8 +67,12 @@ public final class DetachedVideoWindow implements AutoCloseable {
         if (canvas == null) {
             throw new IllegalArgumentException("canvas");
         }
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> attachCanvas(canvas));
+            return;
+        }
         if (this.canvas == canvas) {
-            SwingUtilities.invokeLater(this::showFrame);
+            showFrame();
             return;
         }
         this.canvas = canvas;
@@ -76,26 +80,31 @@ public final class DetachedVideoWindow implements AutoCloseable {
         JPanel videoFrame = new JPanel(new BorderLayout());
         videoFrame.setBorder(BorderFactory.createEmptyBorder(3, 3, 3, 3));
         videoFrame.add(canvas, BorderLayout.CENTER);
-        SwingUtilities.invokeLater(() -> {
-            frame.getContentPane().removeAll();
-            frame.getContentPane().add(videoFrame, BorderLayout.CENTER);
-            frame.getContentPane().add(buildStatusBar(), BorderLayout.SOUTH);
-            frame.getContentPane().revalidate();
-            frame.getContentPane().repaint();
-            frame.setTitle(i18n.tr("frame.videoWindow"));
-            updateStatus(status);
-            showFrame();
-        });
+        frame.getContentPane().removeAll();
+        frame.getContentPane().add(videoFrame, BorderLayout.CENTER);
+        frame.getContentPane().add(buildStatusBar(), BorderLayout.SOUTH);
+        frame.getContentPane().revalidate();
+        frame.getContentPane().repaint();
+        frame.setTitle(i18n.tr("frame.videoWindow"));
+        updateStatus(status);
+        showFrame();
     }
 
     /** Moves the canvas back to the main window (without closing the main one). */
     public void detachCanvas() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::detachCanvas);
+            return;
+        }
         Canvas previous = canvas;
         canvas = null;
         if (previous != null) {
             previous.setFocusable(false);
+            frame.getContentPane().removeAll();
+            frame.getContentPane().revalidate();
+            frame.getContentPane().repaint();
+            frame.setVisible(false);
             canvasAttached.run();
-            SwingUtilities.invokeLater(() -> frame.setVisible(false));
         }
     }
 

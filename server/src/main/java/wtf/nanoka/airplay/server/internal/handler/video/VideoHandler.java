@@ -8,12 +8,16 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayDeque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 
 @Slf4j
 public class VideoHandler extends ChannelInboundHandlerAdapter {
+
+    private static final double FPS_WINDOW_SECONDS = 1.0;
+    private static final double FPS_REPORT_INTERVAL_SECONDS = 0.5;
 
     private final AirPlay airPlay;
     private final AirPlayConsumer dataConsumer;
@@ -22,9 +26,9 @@ public class VideoHandler extends ChannelInboundHandlerAdapter {
     private VideoStreamInfo detectedFormat;
     private VideoStreamInfo.Codec codec = VideoStreamInfo.Codec.UNKNOWN;
     private byte[] pendingParameterSets;
-    private long firstVideoTimestamp = Long.MIN_VALUE;
     private long lastVideoTimestamp = Long.MIN_VALUE;
-    private int measuredFrames;
+    private long lastFpsReportTimestamp = Long.MIN_VALUE;
+    private final ArrayDeque<Long> videoFrameTimestamps = new ArrayDeque<>();
     private boolean callbackPending;
 
     @FunctionalInterface
@@ -211,25 +215,30 @@ public class VideoHandler extends ChannelInboundHandlerAdapter {
         if (detectedFormat == null) {
             return null;
         }
-        if (firstVideoTimestamp == Long.MIN_VALUE) {
-            firstVideoTimestamp = timestamp;
-            lastVideoTimestamp = timestamp;
-            return null;
+        double frameSeconds = lastVideoTimestamp == Long.MIN_VALUE
+                ? 0
+                : fixedPointDeltaSeconds(lastVideoTimestamp, timestamp);
+        if (lastVideoTimestamp != Long.MIN_VALUE && (frameSeconds <= 0 || frameSeconds > 1)) {
+            videoFrameTimestamps.clear();
+            lastFpsReportTimestamp = Long.MIN_VALUE;
         }
-        double frameSeconds = fixedPointDeltaSeconds(lastVideoTimestamp, timestamp);
         lastVideoTimestamp = timestamp;
-        if (frameSeconds <= 0 || frameSeconds > 1) {
+        videoFrameTimestamps.addLast(timestamp);
+
+        while (videoFrameTimestamps.size() > 2
+                && fixedPointDeltaSeconds(videoFrameTimestamps.getFirst(), timestamp) > FPS_WINDOW_SECONDS) {
+            videoFrameTimestamps.removeFirst();
+        }
+        double elapsedSeconds = fixedPointDeltaSeconds(videoFrameTimestamps.getFirst(), timestamp);
+        if (elapsedSeconds < FPS_REPORT_INTERVAL_SECONDS) {
             return null;
         }
-        measuredFrames++;
-        if (measuredFrames < 10 || measuredFrames % 10 != 0) {
+        if (lastFpsReportTimestamp != Long.MIN_VALUE
+                && fixedPointDeltaSeconds(lastFpsReportTimestamp, timestamp) < FPS_REPORT_INTERVAL_SECONDS) {
             return null;
         }
-        double elapsedSeconds = fixedPointDeltaSeconds(firstVideoTimestamp, timestamp);
-        if (elapsedSeconds <= 0) {
-            return null;
-        }
-        double measuredFps = measuredFrames / elapsedSeconds;
+        double measuredFps = (videoFrameTimestamps.size() - 1) / elapsedSeconds;
+        lastFpsReportTimestamp = timestamp;
         detectedFormat = new VideoStreamInfo(detectedFormat.getStreamConnectionId(),
                 detectedFormat.getWidth(), detectedFormat.getHeight(), measuredFps, detectedFormat.getCodec());
         log.info("Measured sender video frame rate: {} fps", String.format("%.2f", measuredFps));

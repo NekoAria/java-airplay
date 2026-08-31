@@ -21,7 +21,7 @@ start.bat
 .\gradlew.bat :player:app:bootJar
 ```
 
-可执行 JAR 位于 `player/app/build/libs/java-airplay-server-1.0.8.jar`。
+可执行 JAR 位于 `player/app/build/libs/java-airplay-server-1.0.9.jar`。
 
 ## 桌面界面
 

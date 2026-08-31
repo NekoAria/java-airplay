@@ -11,11 +11,16 @@ import org.freedesktop.gstreamer.message.Message;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 import wtf.nanoka.airplay.player.gstreamer.ui.VisionPlayerWindow;
 
+import javax.swing.SwingUtilities;
+import java.awt.Canvas;
+import java.util.concurrent.atomic.AtomicLong;
+
 @Slf4j
 public class GstPlayerSwing extends GstPlayer {
 
     private final VisionPlayerWindow window;
     private volatile long videoWindowHandle;
+    private volatile VideoOverlay videoOverlay;
 
     public GstPlayerSwing(int fps,
                           int videoQueueDepth,
@@ -23,12 +28,14 @@ public class GstPlayerSwing extends GstPlayer {
                           String gpuAdapter,
                           String renderMode,
                           boolean hevcEnabled,
+                          boolean aggressiveFrameDropping,
                           WindowOptions options) {
         super(fps, videoQueueDepth,
                 GstPlayerDefault.createPipelineDescription(
                         VideoStreamInfo.Codec.H264, videoDecoder, gpuAdapter, renderMode),
                 hevcEnabled ? GstPlayerDefault.createPipelineDescription(
-                        VideoStreamInfo.Codec.HEVC, videoDecoder, gpuAdapter, renderMode) : null);
+                        VideoStreamInfo.Codec.HEVC, videoDecoder, gpuAdapter, renderMode) : null,
+                aggressiveFrameDropping);
         window = new VisionPlayerWindow(new VisionPlayerWindow.Config(
                 options.receiverName(),
                 options.advertisedWidth(),
@@ -38,8 +45,11 @@ public class GstPlayerSwing extends GstPlayer {
                 options.closeToTray(),
                 options.settings(),
                 options.settingsController(),
-                this::restartVideoPipelines));
-        videoWindowHandle = Native.getComponentID(window.videoCanvas());
+                this::rebindVideoSurface));
+        videoWindowHandle = videoWindowHandle();
+        if (videoWindowHandle == 0) {
+            throw new IllegalStateException("The integrated video surface has no native window handle");
+        }
         h264Pipeline.getBus().setSyncHandler(this::handleSyncMessage);
         if (hevcPipeline != null) {
             hevcPipeline.getBus().setSyncHandler(this::handleSyncMessage);
@@ -67,7 +77,9 @@ public class GstPlayerSwing extends GstPlayer {
             return BusSyncReply.PASS;
         }
         try {
-            VideoOverlay.wrap(sink).setWindowHandle(videoWindowHandle);
+            VideoOverlay overlay = VideoOverlay.wrap(sink);
+            overlay.setWindowHandle(videoWindowHandle);
+            videoOverlay = overlay;
             return BusSyncReply.DROP;
         } catch (RuntimeException error) {
             log.warn("Unable to attach the GStreamer video sink to the application window: {}",
@@ -77,15 +89,63 @@ public class GstPlayerSwing extends GstPlayer {
     }
 
     /**
-     * The video canvas moved between the main window and the detached video
-     * window. The D3D sink keeps the old native surface, so the whole video
-     * pipeline is stopped and restarted to re-bind the new window handle.
+     * Rebinds the active sink after AWT recreates the Canvas peer in its new
+     * top-level window. Keeping the decoder running avoids waiting for a new
+     * H.264/HEVC random-access frame after every move.
      */
-    private void restartVideoPipelines() {
-        videoWindowHandle = Native.getComponentID(window.videoCanvas());
-        if (restartActiveVideoPipeline()) {
-            log.info("Restarted the video pipeline for the moved video surface");
+    private void rebindVideoSurface() {
+        long handle = videoWindowHandle();
+        if (handle == 0) {
+            log.warn("Unable to rebind the video pipeline because the video surface has no native handle");
+            return;
         }
+        videoWindowHandle = handle;
+        VideoOverlay overlay = videoOverlay;
+        if (overlay == null) {
+            return;
+        }
+        try {
+            overlay.setWindowHandle(handle);
+            overlay.expose();
+            log.info("Rebound the video pipeline to the moved video surface");
+        } catch (RuntimeException error) {
+            log.warn("Unable to rebind the active video sink; restarting the pipeline: {}", error.getMessage());
+            if (restartActiveVideoPipeline()) {
+                log.info("Restarted the video pipeline for the moved video surface");
+            }
+        }
+    }
+
+    private long videoWindowHandle() {
+        for (int attempt = 0; attempt < 20; attempt++) {
+            AtomicLong handle = new AtomicLong();
+            Runnable readHandle = () -> {
+                Canvas canvas = window.videoCanvas();
+                if (canvas.isDisplayable()) {
+                    handle.set(Native.getComponentID(canvas));
+                }
+            };
+            try {
+                if (SwingUtilities.isEventDispatchThread()) {
+                    readHandle.run();
+                } else {
+                    SwingUtilities.invokeAndWait(readHandle);
+                }
+            } catch (Exception error) {
+                log.warn("Unable to read the native video surface handle: {}", error.getMessage());
+                return 0;
+            }
+            if (handle.get() != 0) {
+                return handle.get();
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return 0;
+            }
+        }
+        return 0;
     }
 
     @Override

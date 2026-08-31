@@ -38,11 +38,17 @@ public class GstPlayerDefault extends GstPlayer {
 
     public GstPlayerDefault(int fps, int videoQueueDepth, String videoDecoder, String gpuAdapter,
                             String renderMode, boolean hevcEnabled) {
+        this(fps, videoQueueDepth, videoDecoder, gpuAdapter, renderMode, hevcEnabled, false);
+    }
+
+    public GstPlayerDefault(int fps, int videoQueueDepth, String videoDecoder, String gpuAdapter,
+                            String renderMode, boolean hevcEnabled, boolean aggressiveFrameDropping) {
         super(fps, videoQueueDepth,
                 createPipelineDescription(VideoStreamInfo.Codec.H264, videoDecoder, gpuAdapter, renderMode),
                 hevcEnabled
                         ? createPipelineDescription(VideoStreamInfo.Codec.HEVC, videoDecoder, gpuAdapter, renderMode)
-                        : null);
+                        : null,
+                aggressiveFrameDropping);
     }
 
     @Override
@@ -248,7 +254,8 @@ public class GstPlayerDefault extends GstPlayer {
     private static String requireD3dSink(String sink, String decoder, GpuAdapter adapter) {
         requireElement(sink, "native video sink for " + decoder);
         String adapterProperty = adapter == null ? "" : " adapter=" + adapter.index();
-        return sink + adapterProperty + " sync=false";
+        String closedWindowProperty = "d3d12videosink".equals(sink) ? " error-on-closed=false" : "";
+        return sink + adapterProperty + closedWindowProperty + " sync=false";
     }
 
     static String d3dDecoderForAdapter(String api, int adapterIndex) {

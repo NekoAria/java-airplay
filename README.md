@@ -21,7 +21,7 @@ Build and test from source:
 .\gradlew.bat :player:app:bootJar
 ```
 
-The executable JAR is `player/app/build/libs/java-airplay-server-1.0.8.jar`.
+The executable JAR is `player/app/build/libs/java-airplay-server-1.0.9.jar`.
 
 ## Desktop UI
 

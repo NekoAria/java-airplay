@@ -48,6 +48,7 @@ public class PlayerProperties {
         private String videoDecoder = "auto";
         private String gpuAdapter = "auto";
         private int videoQueueDepth = 2;
+        private boolean aggressiveFrameDropping;
         private String renderMode = "balanced";
     }
 }

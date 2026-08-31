@@ -17,6 +17,7 @@ public record ReceiverSettings(
         String videoDecoder,
         String gpuAdapter,
         int videoQueueDepth,
+        boolean aggressiveFrameDropping,
         String renderMode) {
 
     public ReceiverSettings {

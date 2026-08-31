@@ -12,3 +12,4 @@ dump.h264
 release/*.zip
 release/*.sha256
 release/*/
+/AGENT.md

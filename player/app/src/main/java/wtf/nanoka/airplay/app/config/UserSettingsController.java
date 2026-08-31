@@ -391,6 +391,7 @@ public final class UserSettingsController implements SettingsController {
         player.getGstreamer().setVideoDecoder(settings.videoDecoder().trim());
         player.getGstreamer().setGpuAdapter(settings.gpuAdapter().trim());
         player.getGstreamer().setVideoQueueDepth(settings.videoQueueDepth());
+        player.getGstreamer().setAggressiveFrameDropping(settings.aggressiveFrameDropping());
         player.getGstreamer().setRenderMode(settings.renderMode().trim());
         player.validate();
 
@@ -446,6 +447,8 @@ public final class UserSettingsController implements SettingsController {
         properties.setProperty("player.gstreamer.videoDecoder", settings.videoDecoder().trim());
         properties.setProperty("player.gstreamer.gpuAdapter", settings.gpuAdapter().trim());
         properties.setProperty("player.gstreamer.videoQueueDepth", Integer.toString(settings.videoQueueDepth()));
+        properties.setProperty("player.gstreamer.aggressiveFrameDropping",
+                Boolean.toString(settings.aggressiveFrameDropping()));
         properties.setProperty("player.gstreamer.renderMode", settings.renderMode().trim());
     }
 

@@ -49,6 +49,7 @@ class ConfigurationBindingTest {
         assertEquals("auto", player.getGstreamer().getVideoDecoder());
         assertEquals("auto", player.getGstreamer().getGpuAdapter());
         assertEquals(2, player.getGstreamer().getVideoQueueDepth());
+        assertEquals(false, player.getGstreamer().isAggressiveFrameDropping());
         assertEquals("balanced", player.getGstreamer().getRenderMode());
 
         airPlay.validate();
