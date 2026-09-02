@@ -14,12 +14,183 @@ jobs:
         with:
           java-version: 25
           distribution: zulu
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
       - uses: gradle/actions/setup-gradle@v6
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
       - id: version
         shell: pwsh
         run: |
           "value=$($env:GITHUB_REF_NAME -replace '^v', '')" >> $env:GITHUB_OUTPUT
-      - run: .\gradlew.bat release -Pversion=${{ steps.version.outputs.value }}
+
+      - name: Build and test Windows distributions
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDate = [DateTime]::UtcNow.ToString('yyMMdd')
+          $gstreamerRoot = Join-Path $PWD '.runtime\gstreamer'
+          $gstreamerBin = Join-Path $gstreamerRoot 'bin'
+          $gstreamerPlugins = Join-Path $gstreamerRoot 'lib\gstreamer-1.0'
+          $gstreamerScanner = Join-Path $gstreamerRoot `
+            'libexec\gstreamer-1.0\gst-plugin-scanner.exe'
+          $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = $gstreamerRoot
+          $env:PATH = "$gstreamerBin;$env:PATH"
+          $env:GST_PLUGIN_PATH = $gstreamerPlugins
+          $env:GST_PLUGIN_PATH_1_0 = $gstreamerPlugins
+          $env:GST_PLUGIN_SYSTEM_PATH = $gstreamerPlugins
+          $env:GST_PLUGIN_SYSTEM_PATH_1_0 = $gstreamerPlugins
+          $env:GST_PLUGIN_SCANNER = $gstreamerScanner
+          $env:GST_PLUGIN_SCANNER_1_0 = $gstreamerScanner
+          $env:GST_REGISTRY_1_0 = Join-Path $env:RUNNER_TEMP `
+            'java-airplay-build-gstreamer-registry.bin'
+          .\gradlew.bat release "-Pversion=$env:RELEASE_VERSION" "-PreleaseDate=$releaseDate"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows distribution build failed with code $LASTEXITCODE."
+          }
+          .\gradlew.bat :player:gstreamer:test --rerun-tasks
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native GStreamer tests failed with code $LASTEXITCODE."
+          }
+
+      - name: Validate portable and installed distributions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $distributionValidator = Join-Path $PWD 'packaging\windows\validate_distribution.ps1'
+
+          $checksumFiles = @(Get-ChildItem -LiteralPath release -Filter '*.sha256' -File)
+          if ($checksumFiles.Count -ne 2) {
+            throw "Expected two checksum files, found $($checksumFiles.Count)."
+          }
+          foreach ($checksumFile in $checksumFiles) {
+            $line = (Get-Content -LiteralPath $checksumFile.FullName -Raw).Trim()
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') {
+              throw "Invalid checksum file: $($checksumFile.Name)"
+            }
+            $artifact = Join-Path $checksumFile.DirectoryName $Matches[2]
+            $actual = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches[1]) {
+              throw "Checksum mismatch for $artifact"
+            }
+          }
+
+          $portableZip = Get-ChildItem -LiteralPath release -Filter '*-windows-x64.zip' -File |
+            Select-Object -First 1
+          if (!$portableZip) {
+            throw 'Portable ZIP was not generated.'
+          }
+          $portableExtract = Join-Path $env:RUNNER_TEMP 'java-airplay-portable'
+          Expand-Archive -LiteralPath $portableZip.FullName -DestinationPath $portableExtract
+          $portableRoots = @(Get-ChildItem -LiteralPath $portableExtract -Directory)
+          if ($portableRoots.Count -ne 1) {
+            throw "Portable ZIP must contain exactly one root directory; found $($portableRoots.Count)."
+          }
+          $portableRoot = $portableRoots[0]
+          & $distributionValidator -Root $portableRoot.FullName
+
+          $installer = Get-ChildItem -LiteralPath release -Filter '*-windows-x64-setup.exe' -File |
+            Select-Object -First 1
+          if (!$installer) {
+            throw 'Windows installer was not generated.'
+          }
+          $installDirectory = Join-Path $env:ProgramFiles 'Java AirPlay Receiver'
+          if (Test-Path -LiteralPath $installDirectory) {
+            throw "Default installation directory already exists: $installDirectory"
+          }
+          $installLog = Join-Path $env:RUNNER_TEMP 'java-airplay-install.log'
+          $installArguments = @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            '/TASKS=desktopicon', "/LOG=`"$installLog`""
+          )
+          $installation = Start-Process -FilePath $installer.FullName `
+            -ArgumentList $installArguments -Wait -PassThru
+          if ($installation.ExitCode -ne 0) {
+            throw "Silent installation failed with code $($installation.ExitCode)."
+          }
+
+          $installedLauncher = Join-Path $installDirectory 'JavaAirPlayReceiver.exe'
+          & $distributionValidator -Root $installDirectory
+
+          $broadWriteSids = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')
+          $unsafeRights = [System.Security.AccessControl.FileSystemRights]::WriteData `
+            -bor [System.Security.AccessControl.FileSystemRights]::AppendData `
+            -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes `
+            -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes `
+            -bor [System.Security.AccessControl.FileSystemRights]::Delete `
+            -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles `
+            -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions `
+            -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+          $acl = Get-Acl -LiteralPath $installDirectory
+          $rules = $acl.GetAccessRules(
+            $true, $true, [System.Security.Principal.SecurityIdentifier])
+          foreach ($rule in $rules) {
+            if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow `
+                -and $broadWriteSids -contains $rule.IdentityReference.Value `
+                -and ($rule.FileSystemRights -band $unsafeRights) -ne 0) {
+              throw "Program Files payload grants broad write access: $rule"
+            }
+          }
+
+          $startMenuShortcut = Join-Path $env:ProgramData `
+            'Microsoft\Windows\Start Menu\Programs\Java AirPlay Receiver\Java AirPlay Receiver.lnk'
+          $desktopShortcut = Join-Path $env:PUBLIC 'Desktop\Java AirPlay Receiver.lnk'
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($shortcutPath in @($startMenuShortcut, $desktopShortcut)) {
+            if (!(Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+              throw "Installer did not create shortcut: $shortcutPath"
+            }
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            if ($shortcut.TargetPath -ne $installedLauncher) {
+              throw "Shortcut target is incorrect: $shortcutPath -> $($shortcut.TargetPath)"
+            }
+          }
+
+          $settingsDirectory = Join-Path $env:USERPROFILE '.java-airplay'
+          New-Item -ItemType Directory -Path $settingsDirectory -Force | Out-Null
+          $settingsSentinel = Join-Path $settingsDirectory "uninstall-sentinel-$env:GITHUB_RUN_ID.txt"
+          Set-Content -LiteralPath $settingsSentinel -Value 'preserve-user-data' -Encoding UTF8
+
+          $uninstaller = Get-ChildItem -LiteralPath $installDirectory -Filter 'unins*.exe' -File |
+            Select-Object -First 1
+          if (!$uninstaller) {
+            throw 'Inno Setup uninstaller was not installed.'
+          }
+          $uninstallLog = Join-Path $env:RUNNER_TEMP 'java-airplay-uninstall.log'
+          $uninstallArguments = @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+            "/LOG=`"$uninstallLog`""
+          )
+          $uninstallation = Start-Process -FilePath $uninstaller.FullName `
+            -ArgumentList $uninstallArguments -Wait -PassThru
+          if ($uninstallation.ExitCode -ne 0) {
+            throw "Silent uninstall failed with code $($uninstallation.ExitCode)."
+          }
+          if (Test-Path -LiteralPath $installedLauncher) {
+            throw 'Application files remain after uninstall.'
+          }
+          if ((Test-Path -LiteralPath $startMenuShortcut) `
+              -or (Test-Path -LiteralPath $desktopShortcut)) {
+            throw 'Application shortcuts remain after uninstall.'
+          }
+          if (!(Test-Path -LiteralPath $settingsSentinel)) {
+            throw 'Uninstall unexpectedly removed user settings.'
+          }
+          Remove-Item -LiteralPath $settingsSentinel -Force
+
+      - name: Upload installer logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-installer-logs
+          path: ${{ runner.temp }}/java-airplay-*.log
+          if-no-files-found: ignore
 
       - uses: softprops/action-gh-release@v3
         env:
@@ -28,6 +199,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           draft: false
+          fail_on_unmatched_files: true
           files: |
             release/*.zip
+            release/*.exe
             release/*.sha256

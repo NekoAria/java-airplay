@@ -10,6 +10,11 @@ dump.h264
 *.log
 .runtime/
 release/*.zip
+release/*.exe
 release/*.sha256
 release/*/
+packaging/windows/*.exe
+packaging/windows/*.ico
+packaging/windows/dist/
+packaging/windows/stage/
 /AGENT.md

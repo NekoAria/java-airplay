@@ -13,6 +13,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $Workspace = Split-Path -Parent $PSScriptRoot
 $GStreamerBin = & (Join-Path $PSScriptRoot 'bootstrap-runtime.ps1')
+$GStreamerRoot = Split-Path -Parent $GStreamerBin
+$GStreamerPlugins = Join-Path $GStreamerRoot 'lib\gstreamer-1.0'
+$GStreamerScanner = Join-Path $GStreamerRoot 'libexec\gstreamer-1.0\gst-plugin-scanner.exe'
+$env:PATH = "$GStreamerBin;$env:PATH"
+$env:GST_PLUGIN_PATH = $GStreamerPlugins
+$env:GST_PLUGIN_PATH_1_0 = $GStreamerPlugins
+$env:GST_PLUGIN_SYSTEM_PATH = $GStreamerPlugins
+$env:GST_PLUGIN_SYSTEM_PATH_1_0 = $GStreamerPlugins
+$env:GST_PLUGIN_SCANNER = $GStreamerScanner
+$env:GST_PLUGIN_SCANNER_1_0 = $GStreamerScanner
 $embeddedJava = Join-Path $Workspace 'runtime\bin\java.exe'
 $embeddedJavaw = Join-Path $Workspace 'runtime\bin\javaw.exe'
 $JavaExecutable = if (Test-Path -LiteralPath $embeddedJava) {
@@ -28,10 +38,16 @@ $JavawExecutable = if (Test-Path -LiteralPath $embeddedJavaw) {
 }
 
 if (!$JarPath) {
-    $rootJar = Get-ChildItem -LiteralPath $Workspace -Filter 'java-airplay-server-*.jar' -File |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($rootJar) {
-        $JarPath = $rootJar.FullName
+    $stableJar = Join-Path $Workspace 'java-airplay-server.jar'
+    if (Test-Path -LiteralPath $stableJar -PathType Leaf) {
+        $JarPath = $stableJar
+    }
+    if (!$JarPath) {
+        $rootJar = Get-ChildItem -LiteralPath $Workspace -Filter 'java-airplay-server-*.jar' -File |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($rootJar) {
+            $JarPath = $rootJar.FullName
+        }
     }
     $libraryDirectory = Join-Path $Workspace 'player\app\build\libs'
     if (!$JarPath -and (Test-Path -LiteralPath $libraryDirectory)) {

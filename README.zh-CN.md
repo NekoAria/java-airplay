@@ -27,10 +27,10 @@
 
 ### 使用发行包
 
-Windows x64 发行包内置精简版 Java 25 runtime、GStreamer、启动脚本、配置文件和文档，无需另外安装 Java 或 GStreamer。
+Windows x64 发行版同时提供标准安装程序和便携 ZIP。两者均内置精简版 Java 25 runtime、GStreamer、配置文件和文档，无需另外安装 Java 或 GStreamer。
 
-1. 解压发行 ZIP 文件。
-2. 运行 `start.bat`。
+1. 运行安装 EXE，或解压便携 ZIP。
+2. 从开始菜单启动“Java AirPlay Receiver”，或在便携目录运行 `JavaAirPlayReceiver.exe`。
 3. 在 iPhone 上打开控制中心。
 4. 选择“屏幕镜像”，然后选择程序中显示的接收器名称。
 
@@ -101,7 +101,7 @@ ${user.home}/.java-airplay/application.properties
 ./gradlew.bat :player:app:bootJar
 ```
 
-在 Windows x64 环境中从项目根目录构建完整发行包：
+在 Windows x64 环境中从项目根目录构建完整发行版；打包还需要 Python 3 和 Inno Setup 6.3 或更高版本：
 
 ```powershell
 ./gradlew.bat release
@@ -112,9 +112,11 @@ ${user.home}/.java-airplay/application.properties
 ```text
 release/java-airplay-<version>.<yyMMdd>-windows-x64.zip
 release/java-airplay-<version>.<yyMMdd>-windows-x64.zip.sha256
+release/java-airplay-<version>.<yyMMdd>-windows-x64-setup.exe
+release/java-airplay-<version>.<yyMMdd>-windows-x64-setup.exe.sha256
 ```
 
-`release` 任务仅支持 Windows，会将可执行 JAR、精简版 Java runtime、GStreamer、启动脚本、可编辑配置、中英文文档和许可证打包到 ZIP 中。
+仅限 Windows 的 `release` 任务会构建无控制台原生启动器、便携 ZIP、标准安装程序及校验文件。用户设置保存在 `%USERPROFILE%\.java-airplay`，升级或卸载不会删除。
 
 ## 模块
 

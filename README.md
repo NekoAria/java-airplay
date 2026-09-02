@@ -27,10 +27,10 @@ Java 25 desktop receiver for iPhone Screen Mirroring on a local network. It rece
 
 ### Packaged Release
 
-The Windows x64 release package includes a compact Java 25 runtime, GStreamer, startup scripts, configuration, and documentation. Java and GStreamer do not need to be installed separately.
+The Windows x64 release is available as a standard installer and a portable ZIP. Both include a compact Java 25 runtime, GStreamer, configuration, and documentation; Java and GStreamer do not need to be installed separately.
 
-1. Extract the release ZIP.
-2. Run `start.bat`.
+1. Run the setup EXE, or extract the portable ZIP.
+2. Start **Java AirPlay Receiver** from the Start Menu or run `JavaAirPlayReceiver.exe` from the portable directory.
 3. Open Control Center on the iPhone.
 4. Choose **Screen Mirroring**, then select the receiver name shown by the application.
 
@@ -101,7 +101,7 @@ The safe video path is enabled by default. Keep `player.gstreamer.aggressiveFram
 ./gradlew.bat :player:app:bootJar
 ```
 
-Build the complete Windows x64 distribution from the repository root:
+Build the complete Windows x64 distributions from the repository root. Packaging additionally requires Python 3 and Inno Setup 6.3 or newer.
 
 ```powershell
 ./gradlew.bat release
@@ -112,9 +112,11 @@ Generated files:
 ```text
 release/java-airplay-<version>.<yyMMdd>-windows-x64.zip
 release/java-airplay-<version>.<yyMMdd>-windows-x64.zip.sha256
+release/java-airplay-<version>.<yyMMdd>-windows-x64-setup.exe
+release/java-airplay-<version>.<yyMMdd>-windows-x64-setup.exe.sha256
 ```
 
-The release task is Windows-only and bundles the executable JAR, a compact Java runtime, GStreamer, startup scripts, editable configuration, bilingual documentation, and licenses.
+The Windows-only release task builds a native no-console launcher, portable ZIP, standard installer, and checksums. User settings remain under `%USERPROFILE%\.java-airplay` and survive upgrades or uninstall.
 
 ## Modules
 

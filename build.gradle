@@ -68,29 +68,202 @@ wrapper {
 
 def windows = System.getProperty('os.name').toLowerCase().contains('windows')
 def releaseRuntimeDirectory = layout.buildDirectory.dir('release/windows-x64/runtime')
+def releaseStagingDirectory = layout.buildDirectory.dir('release/windows-x64/stage')
+def windowsLauncherFile = layout.buildDirectory.file(
+        'release/windows-x64/launcher/JavaAirPlayReceiver.exe')
+def windowsIconFile = layout.buildDirectory.file(
+        'release/windows-x64/launcher/java-airplay.ico')
 def localGStreamerDirectory = layout.projectDirectory.dir('.runtime/gstreamer')
 def releaseOutputDirectory = layout.projectDirectory.dir('release')
-// Release artifacts carry the current UTC build date as a yyMMdd suffix.
-def releaseBuildDate = providers.provider {
+def windowsPackagingDirectory = layout.projectDirectory.dir('packaging/windows')
+def windowsLauncherSource = windowsPackagingDirectory.file('AirPlayReceiver.cs')
+def windowsIconSource = windowsPackagingDirectory.file('make_icon.py')
+def windowsInstallerSource = windowsPackagingDirectory.file('installer.iss')
+def windowsDistributionValidator = windowsPackagingDirectory.file('validate_distribution.ps1')
+def windowsStartScript = layout.projectDirectory.file('scripts/start.ps1')
+def windowsReleaseWorkflow = layout.projectDirectory.file('.github/workflows/release.yaml')
+
+// Release artifacts carry the current UTC build date as a yyMMdd suffix. CI supplies
+// releaseDate explicitly so configuration-cache reuse cannot preserve yesterday's date.
+def releaseBuildDate = providers.gradleProperty('releaseDate').orElse(providers.provider {
     new Date().format('yyMMdd', TimeZone.getTimeZone('UTC'))
+}).map { date ->
+    if (!(date ==~ /\d{6}/)) {
+        throw new GradleException("releaseDate must use yyMMdd format: ${date}")
+    }
+    date
 }
-def releaseVersion = releaseBuildDate.map { date -> "${project.version}.${date}" }
+def baseVersion = project.version.toString()
+def releaseVersion = releaseBuildDate.map { date ->
+    def value = "${baseVersion}.${date}"
+    if (!(value ==~ /[0-9A-Za-z][0-9A-Za-z._+\-]*/)) {
+        throw new GradleException("Release version contains unsupported characters: ${value}")
+    }
+    value
+}
 def releaseBaseName = releaseVersion.map { value -> "java-airplay-${value}-windows-x64" }
-def releaseChecksumFile = providers.provider {
+def installerBaseName = releaseBaseName.map { value -> "${value}-setup" }
+def portableArtifactFile = providers.provider {
+    new File(releaseOutputDirectory.asFile, "${releaseBaseName.get()}.zip")
+}
+def portableChecksumFile = providers.provider {
     new File(releaseOutputDirectory.asFile, "${releaseBaseName.get()}.zip.sha256")
+}
+def installerArtifactFile = providers.provider {
+    new File(releaseOutputDirectory.asFile, "${installerBaseName.get()}.exe")
+}
+def installerChecksumFile = providers.provider {
+    new File(releaseOutputDirectory.asFile, "${installerBaseName.get()}.exe.sha256")
+}
+def pythonExecutable = providers.environmentVariable('PYTHON').orElse(
+        windows ? 'python.exe' : 'python3')
+
+def requireWindows = {
+    if (!windows) {
+        throw new GradleException('The Windows x64 release must be built on Windows.')
+    }
+}
+
+def writeSha256 = { File artifact, File checksumFile ->
+    def digest = java.security.MessageDigest.getInstance('SHA-256')
+    artifact.withInputStream { input ->
+        byte[] buffer = new byte[1024 * 1024]
+        int bytesRead
+        while ((bytesRead = input.read(buffer)) != -1) {
+            digest.update(buffer, 0, bytesRead)
+        }
+    }
+    def checksum = digest.digest().collect { String.format('%02x', it) }.join()
+    checksumFile.parentFile.mkdirs()
+    checksumFile.setText("${checksum}  ${artifact.name}\n", 'UTF-8')
+}
+
+tasks.register('validateWindowsPackagingSources') {
+    group = 'verification'
+    description = 'Validates the security and layout contracts of the Windows packaging sources.'
+    inputs.files(windowsLauncherSource, windowsIconSource, windowsInstallerSource,
+            windowsDistributionValidator, windowsStartScript, windowsReleaseWorkflow)
+    doLast {
+        def launcher = windowsLauncherSource.asFile.getText('UTF-8')
+        [
+                'runtime", "bin',
+                '.runtime", "gstreamer',
+                'java-airplay-server.jar',
+                '--enable-native-access=ALL-UNNAMED',
+                '-Dgstreamer.path=',
+                'GST_PLUGIN_SCANNER_1_0',
+                '--validate-installation'
+        ].each { required ->
+            if (!launcher.contains(required)) {
+                throw new GradleException("Windows launcher is missing required contract: ${required}")
+            }
+        }
+
+        def installer = windowsInstallerSource.asFile.getText('UTF-8')
+        if (installer =~ /(?m)^\s*#define\s+AppVersion\b/) {
+            throw new GradleException('The Inno Setup version must be supplied by Gradle, not hard-coded.')
+        }
+        def normalizedInstaller = installer.toLowerCase()
+        if (normalizedInstaller.contains('users-modify') || normalizedInstaller.contains('permissions:')) {
+            throw new GradleException('The installer must not make the Program Files application directory user-writable.')
+        }
+        def startScript = windowsStartScript.asFile.getText('UTF-8')
+        if (!startScript.contains("Join-Path \$Workspace 'java-airplay-server.jar'")) {
+            throw new GradleException('The fallback PowerShell launcher must support the stable packaged JAR name.')
+        }
+        def validator = windowsDistributionValidator.asFile.getText('UTF-8')
+        ['--validate-installation', 'gst-plugin-scanner.exe', 'avdec_h265', 'avdec_alac'].each { required ->
+            if (!validator.contains(required)) {
+                throw new GradleException("Windows distribution validator is missing contract: ${required}")
+            }
+        }
+        def releaseWorkflow = windowsReleaseWorkflow.asFile.getText('UTF-8')
+        if (releaseWorkflow.contains('-Pversion=${{')
+                || !releaseWorkflow.contains('"-Pversion=$env:RELEASE_VERSION"')) {
+            throw new GradleException('The release tag must reach Gradle through a quoted environment variable.')
+        }
+        if (!releaseWorkflow.contains(':player:gstreamer:test --rerun-tasks')) {
+            throw new GradleException('Windows releases must execute the native GStreamer test suite explicitly.')
+        }
+        [
+                '#ifndef AppVersion',
+                'PrivilegesRequired=admin',
+                'MinVersion=10.0',
+                'ArchitecturesAllowed=x64compatible',
+                'ArchitecturesInstallIn64BitMode=x64compatible',
+                'runasoriginaluser'
+        ].each { required ->
+            if (!installer.contains(required)) {
+                throw new GradleException("Inno Setup script is missing required contract: ${required}")
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn 'validateWindowsPackagingSources'
+}
+
+tasks.register('generateWindowsLauncherIcon', Exec) {
+    group = 'distribution'
+    description = 'Generates the multi-resolution Windows launcher icon.'
+    inputs.file(windowsIconSource)
+    outputs.file(windowsIconFile)
+    doFirst {
+        def iconFile = windowsIconFile.get().asFile
+        iconFile.parentFile.mkdirs()
+        commandLine pythonExecutable.get(), windowsIconSource.asFile.absolutePath,
+                '--output', iconFile.absolutePath
+    }
+}
+
+tasks.register('compileWindowsLauncher', Exec) {
+    group = 'distribution'
+    description = 'Compiles the native no-console Windows launcher.'
+    dependsOn 'generateWindowsLauncherIcon', 'validateWindowsPackagingSources'
+    inputs.file(windowsLauncherSource)
+    inputs.file(windowsIconFile)
+    outputs.file(windowsLauncherFile)
+    doFirst {
+        requireWindows()
+        def windowsDirectory = System.getenv('WINDIR') ?: 'C:\\Windows'
+        def configuredCompiler = System.getenv('CSC')
+        def candidates = []
+        if (configuredCompiler) {
+            candidates.add(new File(configuredCompiler))
+        }
+        candidates.add(new File(windowsDirectory, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'))
+        candidates.add(new File(windowsDirectory, 'Microsoft.NET/Framework/v4.0.30319/csc.exe'))
+        def compiler = candidates.find { it.isFile() }
+        if (compiler == null) {
+            throw new GradleException(
+                    'The .NET Framework C# compiler was not found. Set CSC to a valid csc.exe path.')
+        }
+        def launcherFile = windowsLauncherFile.get().asFile
+        def iconFile = windowsIconFile.get().asFile
+        launcherFile.parentFile.mkdirs()
+        commandLine compiler.absolutePath,
+                '/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/codepage:65001',
+                '/reference:System.Windows.Forms.dll',
+                "/win32icon:${iconFile.absolutePath}",
+                "/out:${launcherFile.absolutePath}",
+                windowsLauncherSource.asFile.absolutePath
+    }
 }
 
 tasks.register('prepareGStreamerRuntime', Exec) {
     group = 'distribution'
     description = 'Checks or prepares the project-local Windows GStreamer runtime.'
     doFirst {
-        if (!windows) {
-            throw new GradleException('The Windows x64 release must be built on Windows.')
-        }
+        requireWindows()
     }
     commandLine 'powershell.exe', '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', layout.projectDirectory.file('scripts/bootstrap-runtime.ps1').asFile.absolutePath
     outputs.upToDateWhen { false }
+}
+
+project(':player:gstreamer').tasks.named('test') {
+    mustRunAfter rootProject.tasks.named('prepareGStreamerRuntime')
 }
 
 tasks.register('cleanReleaseJavaRuntime', Delete) {
@@ -106,10 +279,9 @@ tasks.register('createReleaseJavaRuntime', Exec) {
         languageVersion = JavaLanguageVersion.of(25)
     }
     inputs.property('javaVersion', 25)
+    outputs.dir(releaseRuntimeDirectory)
     doFirst {
-        if (!windows) {
-            throw new GradleException('The Windows x64 release must be built on Windows.')
-        }
+        requireWindows()
         def javaHome = launcher.get().metadata.installationPath.asFile
         executable = new File(javaHome, 'bin/jlink.exe').absolutePath
         args '--add-modules', 'java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.localedata,jdk.charsets',
@@ -118,59 +290,176 @@ tasks.register('createReleaseJavaRuntime', Exec) {
     }
 }
 
-tasks.register('release', Zip) {
+tasks.register('stageWindowsRelease', Sync) {
     group = 'distribution'
-    description = 'Builds the complete, end-user-ready Windows x64 ZIP distribution.'
+    description = 'Stages the complete portable and installer payload with stable file names.'
     dependsOn ':player:app:bootJar', 'prepareGStreamerRuntime', 'createReleaseJavaRuntime',
-            subprojects.collect { "${it.path}:test" }
-
-    archiveFileName = releaseBaseName.map { "${it}.zip" }
-    destinationDirectory = releaseOutputDirectory
-    outputs.file(releaseChecksumFile)
-    zip64 = true
+            'compileWindowsLauncher'
+    into releaseStagingDirectory
     includeEmptyDirs = false
 
-    into(releaseBaseName) {
-        from(layout.projectDirectory.file("player/app/build/libs/java-airplay-server-${project.version}.jar"))
-        from('start.bat')
-        from('scripts') {
-            into 'scripts'
-        }
-        from('README.md', 'README.zh-CN.md', 'LICENSE')
-        from('config/application.example.properties') {
-            into 'config'
-        }
-        from('config/application.example.properties') {
-            into 'config'
-            rename { 'application.properties' }
-        }
-        from(releaseRuntimeDirectory) {
-            into 'runtime'
-        }
-        from(localGStreamerDirectory) {
-            into '.runtime/gstreamer'
-            include 'bin/**'
-            include 'lib/**/*.dll'
-            include 'libexec/**'
-            include 'etc/**'
-            include 'share/**'
-        }
+    from("player/app/build/libs/java-airplay-server-${project.version}.jar") {
+        rename { 'java-airplay-server.jar' }
     }
+    from(windowsLauncherFile)
+    from('start.bat')
+    from('scripts') {
+        into 'scripts'
+    }
+    from('README.md', 'README.zh-CN.md', 'LICENSE')
+    from('config/application.example.properties') {
+        into 'config'
+    }
+    from('config/application.example.properties') {
+        into 'config'
+        rename { 'application.properties' }
+    }
+    from(releaseRuntimeDirectory) {
+        into 'runtime'
+    }
+    from(localGStreamerDirectory) {
+        into '.runtime/gstreamer'
+        include 'bin/**', 'lib/**/*.dll', 'libexec/**', 'etc/**', 'share/**'
+    }
+}
 
+tasks.register('verifyWindowsReleaseStage') {
+    group = 'verification'
+    description = 'Checks the staged Windows payload before archiving or installer compilation.'
+    dependsOn 'stageWindowsRelease'
+    inputs.dir(releaseStagingDirectory)
     doLast {
-        def zipFile = archiveFile.get().asFile
-        def digest = java.security.MessageDigest.getInstance('SHA-256')
-        zipFile.withInputStream { input ->
-            byte[] buffer = new byte[1024 * 1024]
-            int read
-            while ((read = input.read(buffer)) != -1) {
-                digest.update(buffer, 0, read)
+        def stage = releaseStagingDirectory.get().asFile
+        [
+                'JavaAirPlayReceiver.exe',
+                'java-airplay-server.jar',
+                'start.bat',
+                'runtime/bin/java.exe',
+                'runtime/bin/javaw.exe',
+                '.runtime/gstreamer/bin/gst-inspect-1.0.exe',
+                '.runtime/gstreamer/libexec/gstreamer-1.0/gst-plugin-scanner.exe',
+                'config/application.properties',
+                'config/application.example.properties',
+                'LICENSE'
+        ].each { relativePath ->
+            if (!new File(stage, relativePath).isFile()) {
+                throw new GradleException("Windows release stage is missing ${relativePath}")
             }
         }
-        def checksum = digest.digest().collect { String.format('%02x', it) }.join()
-        def checksumFile = releaseChecksumFile.get()
-        checksumFile.setText("${checksum}  ${zipFile.name}\n", 'UTF-8')
-        logger.lifecycle("Release created: ${zipFile}")
-        logger.lifecycle("SHA-256: ${checksum}")
+        def pluginDirectory = new File(stage, '.runtime/gstreamer/lib/gstreamer-1.0')
+        if (!pluginDirectory.isDirectory()
+                || !pluginDirectory.listFiles().any { it.isFile() && it.name.endsWith('.dll') }) {
+            throw new GradleException('Windows release stage does not contain GStreamer plugins.')
+        }
+        def serverJars = stage.listFiles().findAll {
+            it.isFile() && it.name.startsWith('java-airplay-server') && it.name.endsWith('.jar')
+        }
+        if (serverJars*.name != ['java-airplay-server.jar']) {
+            throw new GradleException("Windows release must contain one stable server JAR: ${serverJars*.name}")
+        }
     }
+}
+
+tasks.register('validateStagedWindowsDistribution', Exec) {
+    group = 'verification'
+    description = 'Smoke-tests the staged launcher and required bundled GStreamer plugins.'
+    dependsOn 'verifyWindowsReleaseStage'
+    inputs.file(windowsDistributionValidator)
+    inputs.dir(releaseStagingDirectory)
+    doFirst {
+        requireWindows()
+        commandLine 'powershell.exe', '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                '-File', windowsDistributionValidator.asFile.absolutePath,
+                '-Root', releaseStagingDirectory.get().asFile.absolutePath
+    }
+}
+
+tasks.register('buildPortableRelease', Zip) {
+    group = 'distribution'
+    description = 'Builds the self-contained Windows x64 portable ZIP.'
+    dependsOn 'validateStagedWindowsDistribution'
+    archiveFileName = releaseBaseName.map { "${it}.zip" }
+    destinationDirectory = releaseOutputDirectory
+    zip64 = true
+    includeEmptyDirs = false
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+    into(releaseBaseName) {
+        from(releaseStagingDirectory)
+    }
+}
+
+tasks.register('buildWindowsInstaller', Exec) {
+    group = 'distribution'
+    description = 'Compiles the standard Windows x64 installer with Inno Setup.'
+    dependsOn 'validateStagedWindowsDistribution', 'generateWindowsLauncherIcon'
+    inputs.file(windowsInstallerSource)
+    inputs.dir(releaseStagingDirectory)
+    inputs.file(windowsIconFile)
+    inputs.property('releaseVersion', releaseVersion)
+    outputs.file(installerArtifactFile)
+    doFirst {
+        requireWindows()
+        def version = releaseVersion.get()
+        def configuredCompiler = System.getenv('INNO_SETUP_COMPILER')
+        def candidates = []
+        if (configuredCompiler) {
+            candidates.add(new File(configuredCompiler))
+        }
+        def programFilesX86 = System.getenv('ProgramFiles(x86)')
+        def programFiles = System.getenv('ProgramFiles')
+        def localAppData = System.getenv('LOCALAPPDATA')
+        if (programFilesX86) {
+            candidates.add(new File(programFilesX86, 'Inno Setup 6/ISCC.exe'))
+        }
+        if (programFiles) {
+            candidates.add(new File(programFiles, 'Inno Setup 6/ISCC.exe'))
+        }
+        if (localAppData) {
+            candidates.add(new File(localAppData, 'Programs/Inno Setup 6/ISCC.exe'))
+        }
+        def compiler = candidates.find { it.isFile() }
+        if (compiler == null) {
+            throw new GradleException(
+                    'Inno Setup 6.3+ was not found. Set INNO_SETUP_COMPILER to a valid ISCC.exe path.')
+        }
+        releaseOutputDirectory.asFile.mkdirs()
+        commandLine compiler.absolutePath,
+                '/Qp',
+                "/DAppVersion=${version}",
+                "/DStageDir=${releaseStagingDirectory.get().asFile.absolutePath}",
+                "/DOutputDir=${releaseOutputDirectory.asFile.absolutePath}",
+                "/DIconFile=${windowsIconFile.get().asFile.absolutePath}",
+                windowsInstallerSource.asFile.absolutePath
+    }
+}
+
+tasks.register('checksumPortableRelease') {
+    group = 'distribution'
+    description = 'Writes the SHA-256 checksum for the portable ZIP.'
+    dependsOn 'buildPortableRelease'
+    inputs.file(portableArtifactFile)
+    outputs.file(portableChecksumFile)
+    doLast {
+        writeSha256(portableArtifactFile.get(), portableChecksumFile.get())
+    }
+}
+
+tasks.register('checksumWindowsInstaller') {
+    group = 'distribution'
+    description = 'Writes the SHA-256 checksum for the Windows installer.'
+    dependsOn 'buildWindowsInstaller'
+    inputs.file(installerArtifactFile)
+    outputs.file(installerChecksumFile)
+    doLast {
+        writeSha256(installerArtifactFile.get(), installerChecksumFile.get())
+    }
+}
+
+tasks.register('release') {
+    group = 'distribution'
+    description = 'Builds the portable ZIP, native launcher, Windows installer, and SHA-256 files.'
+    dependsOn subprojects.findAll { it.path != ':player:gstreamer' }
+            .collect { "${it.path}:test" }
+    dependsOn 'checksumPortableRelease', 'checksumWindowsInstaller'
 }
