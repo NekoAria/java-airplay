@@ -61,7 +61,7 @@ class FFmpegPlayerTest {
     }
 
     @Test
-    void selectsCodecSpecificCommandsWithoutRestartingDuplicateFormatUpdates() {
+    void usesCodecSpecificCommandsAndAvoidsRedundantDetectedRestarts() {
         var audio = new RecordingAudioConsumer();
         var processes = new RecordingProcessFactory();
         var player = new FFmpegPlayer(audio, processes);
@@ -92,6 +92,27 @@ class FFmpegPlayerTest {
         assertEquals(1, hevc.destroyCalls);
         assertFalse(hevc.isAlive());
         player.close();
+    }
+
+    @Test
+    void newVideoStreamRestartsFFplayWhenCodecIsUnchanged() {
+        var processes = new RecordingProcessFactory();
+        var player = new FFmpegPlayer(new RecordingAudioConsumer(), processes);
+
+        player.onVideoFormat(new VideoStreamInfo(
+                "first-stream", 1920, 1080, 60, VideoStreamInfo.Codec.H264));
+        RecordingProcess initialProcess = processes.processes.get(0);
+        player.onVideoFormat(new VideoStreamInfo(
+                "second-stream", 1920, 1080, 60, VideoStreamInfo.Codec.H264));
+
+        assertEquals(2, processes.processes.size());
+        RecordingProcess replacementProcess = processes.processes.get(1);
+        assertEquals(1, initialProcess.destroyCalls);
+        assertFalse(initialProcess.isAlive());
+        assertTrue(replacementProcess.isAlive());
+
+        player.close();
+        assertEquals(1, replacementProcess.destroyCalls);
     }
 
     @Test
