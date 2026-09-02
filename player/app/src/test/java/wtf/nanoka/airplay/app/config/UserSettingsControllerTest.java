@@ -6,11 +6,21 @@ import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.context.support.GenericApplicationContext;
 import wtf.nanoka.airplay.app.PlayerApp;
 import wtf.nanoka.airplay.player.gstreamer.ui.ReceiverSettings;
+import wtf.nanoka.airplay.server.AirPlayConfig;
+import wtf.nanoka.airplay.server.AirPlayConsumer;
+import wtf.nanoka.airplay.server.AirPlayServer;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -76,11 +86,168 @@ class UserSettingsControllerTest {
         }
     }
 
+    @Test
+    void failedRestartValidationDoesNotRequestQuitAndCanBeRetried() {
+        AtomicInteger processStarts = new AtomicInteger();
+        AtomicInteger quitRequests = new AtomicInteger();
+        UserSettingsController.ProcessStarter processStarter = ignored -> {
+            processStarts.incrementAndGet();
+            return TestProcess.exited(1);
+        };
+
+        try (var context = new GenericApplicationContext()) {
+            context.getBeanFactory().registerSingleton("applicationArguments", new DefaultApplicationArguments());
+            context.refresh();
+            var controller = new UserSettingsController(
+                    context,
+                    temporaryDirectory.resolve("application.properties"),
+                    processStarter,
+                    quitRequests::incrementAndGet);
+
+            var first = controller.restart();
+            var retry = controller.restart();
+
+            assertFalse(first.success());
+            assertFalse(retry.success());
+            assertEquals(2, processStarts.get());
+            assertEquals(0, quitRequests.get());
+        }
+    }
+
+    @Test
+    void successfulRestartRequestsFinalQuitOnlyOnce() throws Exception {
+        AtomicInteger processStarts = new AtomicInteger();
+        AtomicInteger quitRequests = new AtomicInteger();
+        AtomicReference<Path> readinessFile = new AtomicReference<>();
+        var replacement = TestProcess.running(42_424L);
+        UserSettingsController.ProcessStarter processStarter = processBuilder -> {
+            int startNumber = processStarts.incrementAndGet();
+            return switch (startNumber) {
+                case 1 -> TestProcess.exited(0);
+                case 2 -> {
+                    var environment = processBuilder.environment();
+                    Path readyFile = Path.of(environment.get(UserSettingsController.RESTART_READY_FILE_ENV));
+                    String readyToken = environment.get(UserSettingsController.RESTART_READY_TOKEN_ENV);
+                    readinessFile.set(readyFile);
+                    RestartReadiness.signal(readyFile, readyToken, replacement.pid());
+                    yield replacement;
+                }
+                default -> throw new AssertionError("Unexpected process start " + startNumber);
+            };
+        };
+
+        try (var context = new GenericApplicationContext()) {
+            context.getBeanFactory().registerSingleton("applicationArguments", new DefaultApplicationArguments());
+            context.getBeanFactory().registerSingleton("airPlayServer", dormantAirPlayServer());
+            context.refresh();
+            var controller = new UserSettingsController(
+                    context,
+                    temporaryDirectory.resolve("application.properties"),
+                    processStarter,
+                    quitRequests::incrementAndGet);
+
+            var first = controller.restart();
+            var duplicate = controller.restart();
+
+            assertTrue(first.success(), first.message());
+            assertFalse(duplicate.success());
+            assertEquals("A restart is already in progress.", duplicate.message());
+            assertEquals(2, processStarts.get());
+            assertEquals(1, quitRequests.get());
+            assertFalse(Files.exists(readinessFile.get()));
+        }
+    }
+
+    private AirPlayServer dormantAirPlayServer() {
+        var airPlayConfig = new AirPlayConfig();
+        airPlayConfig.setIdentityFile(temporaryDirectory.resolve("restart-identity.key").toString());
+        AirPlayConsumer noOpConsumer = (AirPlayConsumer) Proxy.newProxyInstance(
+                AirPlayConsumer.class.getClassLoader(),
+                new Class<?>[]{AirPlayConsumer.class},
+                (proxy, method, arguments) -> null);
+        return new AirPlayServer(airPlayConfig, noOpConsumer);
+    }
+
     private ReceiverSettings validSettings() {
         return new ReceiverSettings(
                 "Living Room", "3840", "2160", "60",
                 temporaryDirectory.resolve("identity.key").toString(), 4,
                 true, true, "gstreamer", true, true,
                 "d3d12h264dec", "0", 3, true, "quality");
+    }
+
+    private static final class TestProcess extends Process {
+        private final long pid;
+        private final int exitCode;
+        private final CountDownLatch termination;
+
+        private TestProcess(long pid, int exitCode, boolean running) {
+            this.pid = pid;
+            this.exitCode = exitCode;
+            termination = new CountDownLatch(running ? 1 : 0);
+        }
+
+        static TestProcess exited(int exitCode) {
+            return new TestProcess(1L, exitCode, false);
+        }
+
+        static TestProcess running(long pid) {
+            return new TestProcess(pid, 0, true);
+        }
+
+        @Override
+        public OutputStream getOutputStream() {
+            return OutputStream.nullOutputStream();
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return InputStream.nullInputStream();
+        }
+
+        @Override
+        public InputStream getErrorStream() {
+            return InputStream.nullInputStream();
+        }
+
+        @Override
+        public int waitFor() throws InterruptedException {
+            termination.await();
+            return exitCode;
+        }
+
+        @Override
+        public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException {
+            return termination.await(timeout, unit);
+        }
+
+        @Override
+        public int exitValue() {
+            if (isAlive()) {
+                throw new IllegalThreadStateException("Process is still running");
+            }
+            return exitCode;
+        }
+
+        @Override
+        public void destroy() {
+            termination.countDown();
+        }
+
+        @Override
+        public Process destroyForcibly() {
+            destroy();
+            return this;
+        }
+
+        @Override
+        public boolean isAlive() {
+            return termination.getCount() > 0;
+        }
+
+        @Override
+        public long pid() {
+            return pid;
+        }
     }
 }

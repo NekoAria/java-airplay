@@ -2,8 +2,7 @@ package wtf.nanoka.airplay.app.menu;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.SpringApplication;
-import org.springframework.context.ApplicationContext;
+import wtf.nanoka.airplay.app.lifecycle.ApplicationShutdown;
 
 import javax.swing.JFrame;
 import javax.swing.JMenuItem;
@@ -45,10 +44,12 @@ public class SystemTrayMenu {
     private JMenuItem quitMenuItem;
     private final Supplier<Labels> labels;
 
-    public SystemTrayMenu(ApplicationContext context, Runnable showWindow, Runnable showDetachedVideo,
-                           Runnable toggleVideoFullscreen, Runnable toggleLanguage,
-                           Supplier<Labels> labels,
-                           Runnable trayReady, Runnable trayUnavailable) {
+    public SystemTrayMenu(ApplicationShutdown applicationShutdown,
+                          Runnable showWindow, Runnable showDetachedVideo,
+                          Runnable toggleVideoFullscreen, Runnable toggleLanguage,
+                          Supplier<Labels> labels,
+                          Runnable trayReady, Runnable trayUnavailable) {
+        Objects.requireNonNull(applicationShutdown, "applicationShutdown");
         this.labels = labels;
         if (!SystemTray.isSupported()) {
             log.warn("System tray is not supported in this desktop session");
@@ -59,7 +60,7 @@ public class SystemTrayMenu {
         }
 
         Labels initialLabels = currentLabels();
-        runOnEdtAndWait(() -> initializePopupMenu(context, showWindow, showDetachedVideo,
+        runOnEdtAndWait(() -> initializePopupMenu(applicationShutdown, showWindow, showDetachedVideo,
                 toggleVideoFullscreen, toggleLanguage, initialLabels));
 
         var imageUrl = Objects.requireNonNull(getClass().getResource("/menu/tray_icon.png"));
@@ -97,7 +98,8 @@ public class SystemTrayMenu {
         }
     }
 
-    private void initializePopupMenu(ApplicationContext context, Runnable showWindow, Runnable showDetachedVideo,
+    private void initializePopupMenu(ApplicationShutdown applicationShutdown,
+                                     Runnable showWindow, Runnable showDetachedVideo,
                                      Runnable toggleVideoFullscreen, Runnable toggleLanguage,
                                      Labels initialLabels) {
         popupMenu = new JPopupMenu();
@@ -149,11 +151,7 @@ public class SystemTrayMenu {
         }
         popupMenu.addSeparator();
         quitMenuItem = new JMenuItem(initialLabels.quit());
-        quitMenuItem.addActionListener(event -> {
-            close();
-            SpringApplication.exit(context, () -> 0);
-            System.exit(0);
-        });
+        quitMenuItem.addActionListener(event -> applicationShutdown.requestQuit());
         popupMenu.add(quitMenuItem);
         applyMenuFont();
     }
