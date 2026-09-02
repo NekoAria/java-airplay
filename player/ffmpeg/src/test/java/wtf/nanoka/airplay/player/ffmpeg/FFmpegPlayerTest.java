@@ -136,6 +136,20 @@ class FFmpegPlayerTest {
     }
 
     @Test
+    void uncheckedFFplayInputCloseFailureDoesNotSkipCleanup() {
+        var audio = new RecordingAudioConsumer();
+        var process = new RecordingProcess(true);
+        var player = new FFmpegPlayer(audio, command -> process);
+        player.onVideoFormatDetected(videoInfo(VideoStreamInfo.Codec.H264));
+
+        assertDoesNotThrow(player::close);
+
+        assertEquals(1, process.destroyCalls);
+        assertFalse(process.isAlive());
+        assertEquals(1, audio.closes);
+    }
+
+    @Test
     void forceTerminationWaitsForTheProcessToActuallyExit() {
         var process = new DelayedForceProcess();
         var player = new FFmpegPlayer(new RecordingAudioConsumer(), command -> process);
@@ -203,10 +217,25 @@ class FFmpegPlayerTest {
     }
 
     private static final class RecordingProcess extends Process {
-        private final ByteArrayOutputStream input = new ByteArrayOutputStream();
+        private final ByteArrayOutputStream input;
         private final AtomicBoolean alive = new AtomicBoolean(true);
         private int destroyCalls;
         private int forcedDestroyCalls;
+
+        private RecordingProcess() {
+            this(false);
+        }
+
+        private RecordingProcess(boolean failInputClose) {
+            input = new ByteArrayOutputStream() {
+                @Override
+                public void close() {
+                    if (failInputClose) {
+                        throw new IllegalStateException("simulated FFplay input close failure");
+                    }
+                }
+            };
+        }
 
         @Override
         public OutputStream getOutputStream() {
