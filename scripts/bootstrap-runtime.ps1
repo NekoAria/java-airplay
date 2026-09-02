@@ -96,6 +96,21 @@ function Get-ClashProxy {
     return $null
 }
 
+function Get-FileSha256([string]$Path) {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $hashBytes = $sha256.ComputeHash($stream)
+            return [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 function Test-GStreamerElement([string]$Inspect, [string]$Element) {
     # Windows PowerShell 5.1 converts native stderr into error records. This local
     # override lets a missing element return false instead of terminating the script.
@@ -158,7 +173,7 @@ function Install-GStreamer {
             Invoke-WebRequest -Uri $GStreamerUrl -OutFile $Installer -UseBasicParsing
         }
     }
-    $actualHash = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualHash = Get-FileSha256 $Installer
     if ($actualHash -ne $GStreamerSha256) {
         throw "GStreamer installer checksum mismatch. Expected $GStreamerSha256 but got $actualHash."
     }
