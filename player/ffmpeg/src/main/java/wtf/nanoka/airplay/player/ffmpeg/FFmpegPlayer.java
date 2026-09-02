@@ -41,22 +41,22 @@ public class FFmpegPlayer implements AirPlayConsumer, AutoCloseable {
 
     @Override
     public void onVideoFormat(VideoStreamInfo videoStreamInfo) {
-        selectVideoFormat(videoStreamInfo);
+        selectVideoFormat(videoStreamInfo, false);
     }
 
     @Override
     public void onVideoFormatDetected(VideoStreamInfo videoStreamInfo) {
-        selectVideoFormat(videoStreamInfo);
+        selectVideoFormat(videoStreamInfo, true);
     }
 
-    private void selectVideoFormat(VideoStreamInfo videoStreamInfo) {
+    private void selectVideoFormat(VideoStreamInfo videoStreamInfo, boolean reuseMatchingProcess) {
         Objects.requireNonNull(videoStreamInfo, "videoStreamInfo");
         synchronized (videoLock) {
             if (closed) {
                 return;
             }
             VideoStreamInfo.Codec codec = videoStreamInfo.getCodec();
-            if (codec != VideoStreamInfo.Codec.UNKNOWN
+            if (reuseMatchingProcess
                     && codec == activeVideoCodec
                     && videoProcess != null
                     && videoProcess.isAlive()) {
