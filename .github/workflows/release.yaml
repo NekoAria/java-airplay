@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_call:
+    inputs:
+      version:
+        description: Version used for CI distribution validation
+        default: '0.0.0'
+        type: string
 
 jobs:
   release:
@@ -25,8 +31,14 @@ jobs:
 
       - id: version
         shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          "value=$($env:GITHUB_REF_NAME -replace '^v', '')" >> $env:GITHUB_OUTPUT
+          $releaseVersion = $env:REQUESTED_VERSION
+          if (!$releaseVersion) {
+            $releaseVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          }
+          "value=$releaseVersion" >> $env:GITHUB_OUTPUT
 
       - name: Build and test Windows distributions
         shell: pwsh
@@ -195,7 +207,9 @@ jobs:
           path: ${{ runner.temp }}/java-airplay-*.log
           if-no-files-found: ignore
 
-      - uses: softprops/action-gh-release@v3
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

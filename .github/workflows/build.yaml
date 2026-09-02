@@ -13,3 +13,7 @@ jobs:
           distribution: zulu
       - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew assemble linuxJvmTest validateWindowsPackagingSources --warning-mode all
+
+  windows:
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    uses: ./.github/workflows/release.yaml
