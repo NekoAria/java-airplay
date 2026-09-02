@@ -51,7 +51,7 @@ SetupLogging=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
 [CustomMessages]
 english.FirewallHint=Installation is complete.%n%nOn first launch, allow Java AirPlay through Windows Firewall on private networks. Otherwise an iPhone or iPad may not discover this PC.%n%nApplication settings are stored in your user profile and are preserved when the application is uninstalled.

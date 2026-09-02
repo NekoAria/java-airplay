@@ -6,7 +6,7 @@ time and are not committed.
 
 ## Outputs
 
-On Windows x64 with JDK 25, Python 3, and Inno Setup 6.3 or newer installed:
+On Windows x64 with JDK 25, Python 3, and Inno Setup 6.5 or newer installed:
 
 ```powershell
 .\gradlew.bat release -Pversion=1.0.9
@@ -37,6 +37,10 @@ Java 25 runtime, the required GStreamer runtime, a stable
 - `installer.iss` installs the staged payload under Program Files and creates
   Start Menu and optional desktop shortcuts. Gradle supplies its version,
   staging path, output path, and icon path through Inno Setup defines.
+- `ChineseSimplified.isl` is a vendored Simplified Chinese translation from
+  [`jrsoftware/issrc@is-6_7_3`](https://github.com/jrsoftware/issrc/tree/is-6_7_3/Files/Languages/Unofficial).
+  Inno Setup 6 omits unofficial translations; the upstream license is in
+  `ChineseSimplified.LICENSE.txt`.
 - `validate_distribution.ps1` checks the stable payload layout, bundled Java,
   native launcher, plugin scanner, and all GStreamer codecs required by the
   application.
