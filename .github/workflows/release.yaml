@@ -54,7 +54,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Windows distribution build failed with code $LASTEXITCODE."
           }
-          .\gradlew.bat :player:gstreamer:test --rerun-tasks
+          .\gradlew.bat :player:gstreamer:nativeGStreamerTest --rerun-tasks
           if ($LASTEXITCODE -ne 0) {
             throw "Native GStreamer tests failed with code $LASTEXITCODE."
           }

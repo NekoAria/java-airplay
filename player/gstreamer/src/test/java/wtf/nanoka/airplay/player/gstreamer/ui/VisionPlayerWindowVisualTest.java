@@ -1,6 +1,7 @@
 package wtf.nanoka.airplay.player.gstreamer.ui;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 
@@ -21,6 +22,7 @@ import java.util.prefs.Preferences;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("desktop-runtime")
 class VisionPlayerWindowVisualTest {
 
     @Test

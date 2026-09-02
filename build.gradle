@@ -49,7 +49,7 @@ subprojects {
         testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     }
 
-    tasks.named('test') {
+    tasks.withType(Test).configureEach {
         useJUnitPlatform()
         jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dio.netty.noUnsafe=true'
     }
@@ -182,8 +182,9 @@ tasks.register('validateWindowsPackagingSources') {
                 || !releaseWorkflow.contains('"-Pversion=$env:RELEASE_VERSION"')) {
             throw new GradleException('The release tag must reach Gradle through a quoted environment variable.')
         }
-        if (!releaseWorkflow.contains(':player:gstreamer:test --rerun-tasks')) {
-            throw new GradleException('Windows releases must execute the native GStreamer test suite explicitly.')
+        if (!releaseWorkflow.contains(':player:gstreamer:nativeGStreamerTest --rerun-tasks')) {
+            throw new GradleException(
+                    'Windows releases must execute the required native GStreamer test suite explicitly.')
         }
         [
                 '#ifndef AppVersion',
@@ -202,6 +203,14 @@ tasks.register('validateWindowsPackagingSources') {
 
 tasks.named('check') {
     dependsOn 'validateWindowsPackagingSources'
+}
+
+tasks.register('linuxJvmTest') {
+    group = 'verification'
+    description = 'Runs every test that is safe without native GStreamer or a desktop runtime.'
+    dependsOn subprojects.findAll { it.path != ':player:gstreamer' }
+            .collect { "${it.path}:test" }
+    dependsOn ':player:gstreamer:pureJvmTest'
 }
 
 tasks.register('generateWindowsLauncherIcon', Exec) {

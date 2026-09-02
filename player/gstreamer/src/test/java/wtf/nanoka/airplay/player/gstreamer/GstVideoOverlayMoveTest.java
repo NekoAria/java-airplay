@@ -4,13 +4,12 @@ import com.sun.jna.Native;
 import org.freedesktop.gstreamer.Bus;
 import org.freedesktop.gstreamer.BusSyncReply;
 import org.freedesktop.gstreamer.Element;
-import org.freedesktop.gstreamer.ElementFactory;
 import org.freedesktop.gstreamer.Gst;
 import org.freedesktop.gstreamer.Pipeline;
-import org.freedesktop.gstreamer.Version;
 import org.freedesktop.gstreamer.interfaces.VideoOverlay;
 import org.freedesktop.gstreamer.message.Message;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.JFrame;
@@ -23,21 +22,22 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag(GstTestSupport.NATIVE_GSTREAMER_TAG)
 class GstVideoOverlayMoveTest {
 
     @Test
     void rebindsPlayingVideoSinkAfterCanvasMovesBetweenFrames() throws Exception {
-        try {
-            GstPlayerUtils.configurePaths();
-            Gst.init(Version.of(1, 10), "VideoOverlayMoveTest");
-        } catch (Throwable error) {
-            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
+        GstTestSupport.initialize("VideoOverlayMoveTest");
+        GstTestSupport.assumeElementFactories("videotestsrc");
+        String sink;
+        if (GstTestSupport.isElementFactoryAvailable("d3d12videosink")) {
+            sink = "d3d12videosink error-on-closed=false sync=false";
+        } else {
+            Assumptions.assumeTrue(
+                    GstTestSupport.isElementFactoryAvailable("d3d11videosink"),
+                    "No Windows VideoOverlay sink is available");
+            sink = "d3d11videosink sync=false";
         }
-        String sink = ElementFactory.find("d3d12videosink") != null
-                ? "d3d12videosink error-on-closed=false sync=false"
-                : ElementFactory.find("d3d11videosink") != null
-                ? "d3d11videosink sync=false" : null;
-        Assumptions.assumeTrue(sink != null, "No Windows VideoOverlay sink is available");
 
         var first = new JFrame("First video host");
         var second = new JFrame("Second video host");

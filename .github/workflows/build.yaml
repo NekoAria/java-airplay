@@ -12,4 +12,4 @@ jobs:
           java-version: 25
           distribution: zulu
       - uses: gradle/actions/setup-gradle@v6
-      - run: ./gradlew build --warning-mode all
+      - run: ./gradlew assemble linuxJvmTest validateWindowsPackagingSources --warning-mode all
