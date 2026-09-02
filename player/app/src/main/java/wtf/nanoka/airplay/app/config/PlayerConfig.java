@@ -2,6 +2,8 @@ package wtf.nanoka.airplay.app.config;
 
 import wtf.nanoka.airplay.app.lifecycle.ApplicationShutdown;
 import wtf.nanoka.airplay.app.menu.SystemTrayMenu;
+import wtf.nanoka.airplay.app.power.DisplayAwakeAirPlayConsumer;
+import wtf.nanoka.airplay.app.power.DisplaySleepPreventer;
 import wtf.nanoka.airplay.player.ffmpeg.FFmpegPlayer;
 import wtf.nanoka.airplay.player.gstreamer.GstPlayerDefault;
 import wtf.nanoka.airplay.player.gstreamer.GstPlayerSwing;
@@ -122,10 +124,19 @@ public class PlayerConfig {
         return tray;
     }
 
+    @Bean(destroyMethod = "close")
+    public DisplaySleepPreventer displaySleepPreventer() {
+        return DisplaySleepPreventer.create();
+    }
+
     @Bean
     public AirPlayServer airPlayServer(AirPlayConfig airPlayConfig,
-                                       AirPlayConsumer airPlayConsumer) {
-        return new AirPlayServer(airPlayConfig, airPlayConsumer);
+                                       AirPlayConsumer airPlayConsumer,
+                                       DisplaySleepPreventer displaySleepPreventer) {
+        AirPlayConsumer playbackConsumer = airPlayConsumer instanceof H264Dump
+                ? airPlayConsumer
+                : new DisplayAwakeAirPlayConsumer(airPlayConsumer, displaySleepPreventer);
+        return new AirPlayServer(airPlayConfig, playbackConsumer);
     }
 
     private ReceiverSettings receiverSettings(AirPlayConfig airPlayConfig, PlayerProperties playerProperties) {

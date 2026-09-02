@@ -21,7 +21,7 @@ Java 25 desktop receiver for iPhone Screen Mirroring on a local network. It rece
 | Hardware decoding | Automatic or selected Windows DXGI GPU adapter |
 | Reliable playback | Preserves encoded reference frames and applies TCP backpressure by default |
 | Adaptive display | Detects the actual stream size, frame rate, and codec, including portrait video |
-| Desktop workflow | Bilingual UI, detachable video window, full screen, system tray, and theme support |
+| Desktop workflow | Bilingual UI, detachable video window, full screen, system tray, themes, and display-awake playback |
 
 ## Quick Start
 
