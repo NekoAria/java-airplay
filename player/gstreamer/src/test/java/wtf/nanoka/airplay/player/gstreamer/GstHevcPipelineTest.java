@@ -1,10 +1,8 @@
 package wtf.nanoka.airplay.player.gstreamer;
 
-import org.freedesktop.gstreamer.ElementFactory;
 import org.freedesktop.gstreamer.Gst;
 import org.freedesktop.gstreamer.Pipeline;
-import org.freedesktop.gstreamer.Version;
-import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 
@@ -12,18 +10,15 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag(GstTestSupport.NATIVE_GSTREAMER_TAG)
 class GstHevcPipelineTest {
 
     @Test
     void buildsAndRunsTheSoftwareHevcPath() {
-        try {
-            GstPlayerUtils.configurePaths();
-            Gst.init(Version.of(1, 10), "HevcPipelineTest");
-        } catch (Throwable error) {
-            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
-        }
-        Assumptions.assumeTrue(ElementFactory.find("x265enc") != null, "x265enc is unavailable");
-        Assumptions.assumeTrue(ElementFactory.find("avdec_h265") != null, "avdec_h265 is unavailable");
+        GstTestSupport.initialize("HevcPipelineTest");
+        GstTestSupport.assumeElementFactories(
+                "appsrc", "h265parse", "avdec_h265", "queue", "clocksync", "autovideosink",
+                "videotestsrc", "x265enc", "fakesink");
 
         String configuredPipeline = GstPlayerDefault.createPipelineDescription(
                 VideoStreamInfo.Codec.HEVC, "avdec_h264", "auto", "balanced");

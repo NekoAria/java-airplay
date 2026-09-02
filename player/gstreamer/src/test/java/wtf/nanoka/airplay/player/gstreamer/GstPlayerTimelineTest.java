@@ -2,9 +2,8 @@ package wtf.nanoka.airplay.player.gstreamer;
 
 import org.freedesktop.gstreamer.Gst;
 import org.freedesktop.gstreamer.Pipeline;
-import org.freedesktop.gstreamer.Version;
 import org.freedesktop.gstreamer.elements.AppSink;
-import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 
@@ -12,16 +11,16 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+@Tag(GstTestSupport.NATIVE_GSTREAMER_TAG)
 class GstPlayerTimelineTest {
 
     @Test
     void preservesRemoteVideoTimelineForAudioCatchUp() {
-        try {
-            GstPlayerUtils.configurePaths();
-            Gst.init(Version.of(1, 10), "PlayerTimelineTest");
-        } catch (Throwable error) {
-            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
-        }
+        GstTestSupport.initialize("PlayerTimelineTest");
+        GstTestSupport.assumeElementFactories(
+                "appsrc", "appsink", "fakesink",
+                "avdec_alac", "avdec_aac", "audioconvert", "audioresample",
+                "clocksync", "autoaudiosink");
 
         try (var player = new TimelinePlayer()) {
             player.onVideoFormatDetected(new VideoStreamInfo(

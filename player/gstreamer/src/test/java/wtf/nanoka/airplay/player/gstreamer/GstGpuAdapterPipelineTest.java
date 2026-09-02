@@ -1,10 +1,9 @@
 package wtf.nanoka.airplay.player.gstreamer;
 
-import org.freedesktop.gstreamer.ElementFactory;
 import org.freedesktop.gstreamer.Gst;
 import org.freedesktop.gstreamer.Pipeline;
-import org.freedesktop.gstreamer.Version;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -13,16 +12,12 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag(GstTestSupport.NATIVE_GSTREAMER_TAG)
 class GstGpuAdapterPipelineTest {
 
     @Test
     void ignoresAdaptersWithoutRegisteredDecoderFactories() {
-        try {
-            GstPlayerUtils.configurePaths();
-            Gst.init(Version.of(1, 10), "GpuAdapterListTest");
-        } catch (Throwable error) {
-            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
-        }
+        GstTestSupport.initialize("GpuAdapterListTest");
 
         assertTrue(GstPlayerDefault.availableGpuAdapterIndices().contains("auto"));
         GstPlayerDefault.availableGpuAdapters().forEach(adapter -> {
@@ -34,16 +29,15 @@ class GstGpuAdapterPipelineTest {
 
     @Test
     void usesDecoderFactoryRegisteredForSelectedDxgiAdapter() {
-        try {
-            GstPlayerUtils.configurePaths();
-            Gst.init(Version.of(1, 10), "GpuAdapterPipelineTest");
-        } catch (Throwable error) {
-            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
-        }
+        GstTestSupport.initialize("GpuAdapterPipelineTest");
+        GstTestSupport.assumeElementFactories(
+                "appsrc", "videotestsrc", "x264enc", "h264parse", "queue", "clocksync",
+                "d3d12videosink", "fakesink");
 
         List<GpuAdapter> capableAdapters = GpuAdapterScanner.scan().stream()
                 .filter(GpuAdapter::isHardware)
-                .filter(adapter -> ElementFactory.find(GstPlayerDefault.d3dDecoderForAdapter("d3d12", adapter.index())) != null)
+                .filter(adapter -> GstTestSupport.isElementFactoryAvailable(
+                        GstPlayerDefault.d3dDecoderForAdapter("d3d12", adapter.index())))
                 .toList();
         Assumptions.assumeFalse(capableAdapters.isEmpty(), "No D3D12 H.264 decoder adapters found");
 

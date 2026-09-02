@@ -2,8 +2,7 @@ package wtf.nanoka.airplay.player.gstreamer;
 
 import org.freedesktop.gstreamer.Gst;
 import org.freedesktop.gstreamer.Pipeline;
-import org.freedesktop.gstreamer.Version;
-import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 
@@ -15,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 
+@Tag(GstTestSupport.NATIVE_GSTREAMER_TAG)
 class GstPlayerBackpressureTest {
 
     @Test
@@ -68,12 +68,11 @@ class GstPlayerBackpressureTest {
     }
 
     private void initializeGStreamer() {
-        try {
-            GstPlayerUtils.configurePaths();
-            Gst.init(Version.of(1, 10), "PlayerBackpressureTest");
-        } catch (Throwable error) {
-            Assumptions.assumeTrue(false, "Native GStreamer is unavailable: " + error.getMessage());
-        }
+        GstTestSupport.initialize("PlayerBackpressureTest");
+        GstTestSupport.assumeElementFactories(
+                "appsrc", "identity", "fakesink",
+                "avdec_alac", "avdec_aac", "audioconvert", "audioresample",
+                "clocksync", "autoaudiosink");
     }
 
     private void startVideo(GstPlayer player) {

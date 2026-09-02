@@ -7,3 +7,24 @@ dependencies {
     implementation "org.freedesktop.gstreamer:gst1-java-core:${rootProject.ext.gstreamerCoreVersion}"
     implementation 'com.formdev:flatlaf:3.0'
 }
+
+tasks.register('pureJvmTest', Test) {
+    group = 'verification'
+    description = 'Runs tests that need only a headless JVM and no platform-native runtime.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        excludeTags 'native-gstreamer', 'native-platform', 'desktop-runtime'
+    }
+}
+
+tasks.register('nativeGStreamerTest', Test) {
+    group = 'verification'
+    description = 'Runs native GStreamer tests and fails when the runtime or required plugins are unavailable.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    environment 'JAVA_AIRPLAY_REQUIRE_NATIVE_GSTREAMER_TESTS', 'true'
+    useJUnitPlatform {
+        includeTags 'native-gstreamer'
+    }
+}

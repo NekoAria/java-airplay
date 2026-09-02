@@ -1,10 +1,12 @@
 package wtf.nanoka.airplay.player.gstreamer;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("native-platform")
 class GpuAdapterScannerTest {
 
     @Test
