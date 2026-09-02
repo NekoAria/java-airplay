@@ -86,6 +86,34 @@ Common settings:
 
 The safe video path is enabled by default. Keep `player.gstreamer.aggressiveFrameDropping=false` unless the lowest possible latency is more important than picture integrity. Dropping H.264/HEVC reference frames can cause block corruption until the sender reconnects.
 
+## Playback Backend Matrix
+
+`player.implementation` selects only the media renderer; the server enforces pairing, session validation, and exclusive mirroring ownership for every backend.
+
+| Backend | H.264 mirroring | Experimental HEVC | ALAC / AAC-ELD audio | HTTP/HLS playback | Desktop experience | GPU selection |
+|---|---|---|---|---|---|---|
+| `gstreamer` (default) | Yes | Yes, with `airplay.hevc=true` and the required plugins | Yes | Yes, through `playbin3` | Integrated receiver and settings UI when `player.gstreamer.swing=true` | Automatic or explicit Windows DXGI adapter |
+| `ffmpeg` | Yes, through `ffplay` | Yes, with `airplay.hevc=true` | Yes, through GStreamer | No | Separate full-screen FFplay window | Not exposed by the application |
+| `vlc` | Yes | No | No | No | Basic embedded VLC window | Not exposed by the application |
+| `h264-dump` | Writes only to `dump.h264` | No | No | No | None | Not applicable |
+
+Packaged Windows distributions use GStreamer by default. Source builds using `ffmpeg` require `ffplay` on `PATH`; the GStreamer audio plugins are still required. The `vlc` backend requires a compatible local libVLC installation. The diagnostic-only `h264-dump` backend writes `dump.h264` to the process working directory.
+
+## Mirroring Session Takeover
+
+The receiver allows only one active RTSP screen-mirroring owner. There is no confirmation prompt: another valid control connection automatically takes ownership when it starts setting up timing, video, or audio.
+
+A handoff from device A to device B intentionally follows `revoke → stop → drain → disconnect`:
+
+1. Revoke A's control and media leases, rejecting subsequent mirroring operations and media packets.
+2. Stop A's video, audio, and timing sources before waiting for player callbacks.
+3. Wait only for callbacks already running under A's revoked leases.
+4. Notify the playback backend once per previously connected media stream, close A's stale control channel, then continue B's setup.
+
+Device A may therefore show a disconnection as soon as B starts mirroring. Video from A is never combined with audio from B. Late frames, delayed teardown, and disconnect callbacks from A cannot stop B, even during a rapid reconnect or when a new control connection reuses the same AirPlay session ID.
+
+This policy applies only to RTSP mirroring timing, video, and audio streams. HTTP/HLS playback retains its separate lifecycle and does not participate in mirroring takeover.
+
 ## Network and Security Notes
 
 - Keep the iPhone and receiver on the same multicast-capable LAN.
