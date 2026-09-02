@@ -288,7 +288,8 @@ tasks.register('createReleaseJavaRuntime', Exec) {
         languageVersion = JavaLanguageVersion.of(25)
     }
     inputs.property('javaVersion', 25)
-    outputs.dir(releaseRuntimeDirectory)
+    // Do not declare the runtime directory as an output: Gradle creates output
+    // directories before execution, but jlink requires the directory to be absent.
     doFirst {
         requireWindows()
         def javaHome = launcher.get().metadata.installationPath.asFile
