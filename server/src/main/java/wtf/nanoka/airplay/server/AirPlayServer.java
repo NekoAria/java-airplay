@@ -12,7 +12,9 @@ public class AirPlayServer {
 
     private final AirPlayBonjour airPlayBonjour;
     private final ControlServer controlServer;
-    private boolean started;
+    private final Object lifecycleMonitor = new Object();
+    private LifecycleState lifecycleState = LifecycleState.STOPPED;
+    private boolean stopRequestedDuringStart;
 
     public AirPlayServer(AirPlayConfig airPlayConfig, AirPlayConsumer airPlayConsumer) {
         try {
@@ -29,27 +31,64 @@ public class AirPlayServer {
         }
     }
 
-    public synchronized void start() throws Exception {
-        if (started) {
-            return;
+    public void start() throws Exception {
+        synchronized (lifecycleMonitor) {
+            if (lifecycleState == LifecycleState.STARTED
+                    || lifecycleState == LifecycleState.STARTING) {
+                return;
+            }
+            if (lifecycleState == LifecycleState.STOPPING) {
+                throw new IllegalStateException("Cannot start AirPlay while it is stopping");
+            }
+            lifecycleState = LifecycleState.STARTING;
         }
+
         try {
             controlServer.start();
             airPlayBonjour.start(controlServer.getPort());
-            started = true;
-        } catch (Exception e) {
+            boolean stopAfterStart;
+            synchronized (lifecycleMonitor) {
+                lifecycleState = LifecycleState.STARTED;
+                stopAfterStart = stopRequestedDuringStart;
+                stopRequestedDuringStart = false;
+            }
+            if (stopAfterStart) {
+                stop();
+            }
+        } catch (Exception exception) {
             try {
                 stopComponents();
             } catch (RuntimeException cleanupError) {
-                e.addSuppressed(cleanupError);
+                exception.addSuppressed(cleanupError);
             }
-            throw e;
+            synchronized (lifecycleMonitor) {
+                lifecycleState = LifecycleState.STOPPED;
+                stopRequestedDuringStart = false;
+            }
+            throw exception;
         }
     }
 
-    public synchronized void stop() {
-        started = false;
-        stopComponents();
+    public void stop() {
+        synchronized (lifecycleMonitor) {
+            if (lifecycleState == LifecycleState.STOPPED
+                    || lifecycleState == LifecycleState.STOPPING) {
+                return;
+            }
+            if (lifecycleState == LifecycleState.STARTING) {
+                stopRequestedDuringStart = true;
+                return;
+            }
+            lifecycleState = LifecycleState.STOPPING;
+        }
+
+        try {
+            stopComponents();
+        } finally {
+            synchronized (lifecycleMonitor) {
+                lifecycleState = LifecycleState.STOPPED;
+            }
+        }
     }
 
     private void stopComponents() {
@@ -71,5 +110,12 @@ public class AirPlayServer {
         if (failure != null) {
             throw failure;
         }
+    }
+
+    private enum LifecycleState {
+        STOPPED,
+        STARTING,
+        STARTED,
+        STOPPING
     }
 }

@@ -73,7 +73,18 @@ public class AirPlay {
     }
 
     public RtspSetupInfo rtspSetupInfo(InputStream in) throws Exception {
-        var setupInfo = rtsp.setup(in);
+        RTSP.PendingSetup pendingSetup = rtsp.prepareSetup(in);
+        commitRtspSetup(pendingSetup);
+        return pendingSetup.setupInfo();
+    }
+
+    public PendingRtspSetup prepareRtspSetup(InputStream in) throws Exception {
+        return new PendingRtspSetup(rtsp.prepareSetup(in));
+    }
+
+    private synchronized void commitRtspSetup(RTSP.PendingSetup pendingSetup) {
+        rtsp.commit(pendingSetup);
+        RtspSetupInfo setupInfo = pendingSetup.setupInfo();
         if (setupInfo.keySetup()) {
             fairPlayVideoDecryptor = null;
             fairPlayAudioDecryptor = null;
@@ -85,7 +96,6 @@ public class AirPlay {
                 }
             });
         }
-        return setupInfo;
     }
 
     /**
@@ -138,5 +148,26 @@ public class AirPlay {
             fairPlayAudioDecryptor = new FairPlayAudioDecryptor(getFairPlayAesKey(), rtsp.getEiv(), pairing.getSharedSecret());
         }
         fairPlayAudioDecryptor.decrypt(audio, audioLength);
+    }
+
+    public final class PendingRtspSetup {
+        private final RTSP.PendingSetup pendingSetup;
+        private boolean committed;
+
+        private PendingRtspSetup(RTSP.PendingSetup pendingSetup) {
+            this.pendingSetup = pendingSetup;
+        }
+
+        public RtspSetupInfo info() {
+            return pendingSetup.setupInfo();
+        }
+
+        public synchronized void commit() {
+            if (committed) {
+                return;
+            }
+            commitRtspSetup(pendingSetup);
+            committed = true;
+        }
     }
 }

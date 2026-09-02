@@ -89,66 +89,94 @@ public class VideoServer {
         }
     }
 
-    public synchronized void stop() {
-        serverGeneration++;
-        pendingVideoFormat = null;
-        disconnectActiveVideoConnection();
-        if (channel != null) {
-            channel.close().syncUninterruptibly();
-            channel = null;
-        }
-        if (bossGroup != null) {
-            bossGroup.shutdownGracefully(0, 2, TimeUnit.SECONDS);
-            bossGroup = null;
-        }
-        if (workerGroup != null) {
-            workerGroup.shutdownGracefully(0, 2, TimeUnit.SECONDS);
-            workerGroup = null;
-        }
-        airPlayConsumer = null;
-        log.info("AirPlay video server stopped");
-    }
-
-    public synchronized void onVideoFormat(VideoStreamInfo videoStreamInfo) {
-        pendingVideoFormat = videoStreamInfo;
-        if (activeVideoConnection != null) {
-            activeVideoConnection.onVideoFormat(videoStreamInfo);
+    private void interruptActiveConnection() {
+        VideoConnection connection = activeVideoConnection;
+        if (connection != null) {
+            connection.invalidate();
+            connection.closeChannel();
         }
     }
 
-    private synchronized VideoConnection openVideoConnection(SocketChannel channel, long generation) {
-        if (generation != serverGeneration || airPlayConsumer == null) {
-            return null;
+    public void stop() {
+        // Closing first interrupts asynchronous work before server state is detached.
+        interruptActiveConnection();
+        VideoConnection disconnectedConnection;
+        synchronized (this) {
+            serverGeneration++;
+            pendingVideoFormat = null;
+            disconnectedConnection = detachActiveVideoConnection();
+            if (channel != null) {
+                channel.close().syncUninterruptibly();
+                channel = null;
+            }
+            if (bossGroup != null) {
+                bossGroup.shutdownGracefully(0, 2, TimeUnit.SECONDS);
+                bossGroup = null;
+            }
+            if (workerGroup != null) {
+                workerGroup.shutdownGracefully(0, 2, TimeUnit.SECONDS);
+                workerGroup = null;
+            }
+            airPlayConsumer = null;
+            log.info("AirPlay video server stopped");
         }
-        disconnectActiveVideoConnection();
-        VideoConnection connection = new VideoConnection(airPlayConsumer, channel);
-        activeVideoConnection = connection;
+        notifyVideoDisconnect(disconnectedConnection);
+    }
+
+    public void onVideoFormat(VideoStreamInfo videoStreamInfo) {
+        VideoConnection connection;
+        synchronized (this) {
+            pendingVideoFormat = videoStreamInfo;
+            connection = activeVideoConnection;
+        }
+        if (connection != null) {
+            connection.onVideoFormat(videoStreamInfo);
+        }
+    }
+
+    private VideoConnection openVideoConnection(SocketChannel channel, long generation) {
+        VideoConnection disconnectedConnection;
+        VideoConnection connection;
+        synchronized (this) {
+            if (generation != serverGeneration || airPlayConsumer == null) {
+                return null;
+            }
+            disconnectedConnection = detachActiveVideoConnection();
+            connection = new VideoConnection(airPlayConsumer, channel);
+            activeVideoConnection = connection;
+        }
+        notifyVideoDisconnect(disconnectedConnection);
         return connection;
     }
 
-    private synchronized void disconnectActiveVideoConnection() {
+    private VideoConnection detachActiveVideoConnection() {
         VideoConnection connection = activeVideoConnection;
         activeVideoConnection = null;
         if (connection != null) {
             connection.invalidate();
             connection.closeChannel();
-            notifyVideoDisconnect();
         }
+        return connection;
     }
 
-    private synchronized void videoConnectionInactive(VideoConnection connection) {
-        if (activeVideoConnection != connection) {
+    private void videoConnectionInactive(VideoConnection connection) {
+        synchronized (this) {
+            if (activeVideoConnection != connection) {
+                connection.invalidate();
+                return;
+            }
+            activeVideoConnection = null;
             connection.invalidate();
+        }
+        notifyVideoDisconnect(connection);
+    }
+
+    private void notifyVideoDisconnect(VideoConnection connection) {
+        if (connection == null) {
             return;
         }
-        activeVideoConnection = null;
-        connection.invalidate();
-        notifyVideoDisconnect();
-    }
-
-    private void notifyVideoDisconnect() {
         try {
-            airPlayConsumer.onVideoSrcDisconnect();
+            connection.delegate.onVideoSrcDisconnect();
         } catch (RuntimeException | LinkageError e) {
             log.warn("Video consumer disconnect failed: {}", e.getMessage(), e);
         }
@@ -166,11 +194,16 @@ public class VideoServer {
         }
 
         private void applyPendingFormat() {
-            withCurrent(delegate -> {
-                if (pendingVideoFormat != null) {
-                    delegate.onVideoFormat(pendingVideoFormat);
+            VideoStreamInfo videoStreamInfo;
+            synchronized (VideoServer.this) {
+                if (!valid.get() || activeVideoConnection != this) {
+                    return;
                 }
-            });
+                videoStreamInfo = pendingVideoFormat;
+            }
+            if (videoStreamInfo != null) {
+                delegate.onVideoFormat(videoStreamInfo);
+            }
         }
 
         private void invalidate() {
@@ -193,10 +226,11 @@ public class VideoServer {
 
         private void withCurrent(Consumer<AirPlayConsumer> callback) {
             synchronized (VideoServer.this) {
-                if (valid.get() && activeVideoConnection == this) {
-                    callback.accept(delegate);
+                if (!valid.get() || activeVideoConnection != this) {
+                    return;
                 }
             }
+            callback.accept(delegate);
         }
 
         @Override

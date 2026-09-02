@@ -4,12 +4,14 @@ import com.dd.plist.BinaryPropertyListParser;
 import com.dd.plist.NSData;
 import com.dd.plist.NSDictionary;
 import wtf.nanoka.airplay.lib.AudioStreamInfo;
+import wtf.nanoka.airplay.lib.AirPlay;
 import wtf.nanoka.airplay.lib.AirPlayIdentity;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 import wtf.nanoka.airplay.server.AirPlayConfig;
 import wtf.nanoka.airplay.server.AirPlayConsumer;
 import wtf.nanoka.airplay.server.internal.handler.session.Session;
 import wtf.nanoka.airplay.server.internal.handler.session.SessionManager;
+import wtf.nanoka.airplay.server.internal.handler.session.SessionMediaCoordinator;
 import wtf.nanoka.airplay.server.internal.handler.util.PropertyListUtil;
 import io.lindstrom.m3u8.model.*;
 import io.lindstrom.m3u8.parser.MasterPlaylistParser;
@@ -24,7 +26,6 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.rtsp.*;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
@@ -32,29 +33,49 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
-@RequiredArgsConstructor
 public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage> {
 
     private final SessionManager sessionManager;
+    private final SessionMediaCoordinator mediaCoordinator;
     private final AirPlayConfig airPlayConfig;
     private final AirPlayConsumer airPlayConsumer;
     private final AirPlayIdentity identity;
     private String rtspSessionId;
-    private String httpSessionId;
+    private final Set<String> retainedHttpSessionIds = new HashSet<>();
     private boolean reverseConnection;
     private boolean peerPaired;
+    private SessionManager.ControlSession controlSession;
+    private AirPlay.PendingRtspSetup pendingKeySetup;
 
     private static final HttpResponseStatus CLIENT_AUTHENTICATION_FAILURE =
             new HttpResponseStatus(470, "Client Authentication Failure");
+
+    public ControlHandler(
+            SessionManager sessionManager,
+            SessionMediaCoordinator mediaCoordinator,
+            AirPlayConfig airPlayConfig,
+            AirPlayConsumer airPlayConsumer,
+            AirPlayIdentity identity) {
+        this.sessionManager = sessionManager;
+        this.mediaCoordinator = mediaCoordinator;
+        this.airPlayConfig = airPlayConfig;
+        this.airPlayConsumer = airPlayConsumer;
+        this.identity = identity;
+    }
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpMessage msg) throws Exception {
         if (msg instanceof FullHttpRequest request) {
             if (RtspVersions.RTSP_1_0.equals(request.protocolVersion())) {
+                if (rejectRtspSessionRebind(ctx, request)) {
+                    return;
+                }
                 if (HttpMethod.GET.equals(request.method()) && "/info".equals(request.uri())) {
                     handleGetInfo(ctx, request);
                 } else if (HttpMethod.POST.equals(request.method()) && "/pair-setup".equals(request.uri())) {
@@ -133,27 +154,50 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
      * Resolves session by the request headers:<br/>
      * {@code Active-Remote} for RTSP<br/>
      * {@code X-Apple-Session-ID} for HTTP
+     * <p>
+     * The first RTSP request that resolves a session binds this connection to
+     * one control generation. A later request with a different non-blank session
+     * ID is rejected before dispatch.
      *
      * @param request incoming request
      * @return active session
      */
     private Session resolveSession(ChannelHandlerContext ctx, FullHttpRequest request) {
-        var sessionId = sessionId(request);
-        if (sessionId == null || sessionId.isBlank()) {
-            sessionId = "channel:" + ctx.channel().id().asLongText();
+        var sessionId = sessionId(ctx, request);
+        if (!RtspVersions.RTSP_1_0.equals(request.protocolVersion())) {
+            return sessionManager.getSession(sessionId);
         }
-        if (RtspVersions.RTSP_1_0.equals(request.protocolVersion())) {
+
+        if (controlSession == null) {
             rtspSessionId = sessionId;
+            controlSession = sessionManager.openControlSession(sessionId, ctx::close);
         }
-        return sessionManager.getSession(sessionId);
+        return controlSession.getSession();
+    }
+
+    private boolean rejectRtspSessionRebind(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (controlSession == null) {
+            return false;
+        }
+        var requestedSessionId = request.headers().get("Active-Remote");
+        var boundSessionId = controlSession.getSession().getId();
+        if (requestedSessionId == null
+                || requestedSessionId.isBlank()
+                || requestedSessionId.equals(boundSessionId)) {
+            return false;
+        }
+
+        log.warn("Rejecting RTSP control channel session change from {} to {}",
+                boundSessionId, requestedSessionId);
+        var response = createRtspResponse(request);
+        response.setStatus(HttpResponseStatus.BAD_REQUEST);
+        HttpUtil.setContentLength(response, response.content().readableBytes());
+        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        return true;
     }
 
     private Session resolveHttpSession(ChannelHandlerContext ctx, FullHttpRequest request) {
-        var sessionId = sessionId(request);
-        if (sessionId == null || sessionId.isBlank()) {
-            sessionId = "channel:" + ctx.channel().id().asLongText();
-        }
-        httpSessionId = sessionId;
+        var sessionId = sessionId(ctx, request);
         var session = sessionManager.findSession(sessionId);
         boolean existingSession = session != null;
         var peerAddress = peerAddress(ctx);
@@ -170,7 +214,16 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
             }
             return null;
         }
-        return session;
+        return retainHttpSession(session) ? session : null;
+    }
+
+    private boolean retainHttpSession(Session session) {
+        if (retainedHttpSessionIds.add(session.getId())
+                && !sessionManager.retainHttpSession(session)) {
+            retainedHttpSessionIds.remove(session.getId());
+            return false;
+        }
+        return true;
     }
 
     private InetAddress peerAddress(ChannelHandlerContext ctx) {
@@ -178,10 +231,14 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
                 ? remote.getAddress() : null;
     }
 
-    private String sessionId(FullHttpRequest request) {
-        return RtspVersions.RTSP_1_0.equals(request.protocolVersion())
-                ? request.headers().get("Active-Remote")
-                : request.headers().get("X-Apple-Session-ID");
+    private String sessionId(ChannelHandlerContext ctx, FullHttpRequest request) {
+        String headerName = RtspVersions.RTSP_1_0.equals(request.protocolVersion())
+                ? "Active-Remote"
+                : "X-Apple-Session-ID";
+        String sessionId = request.headers().get(headerName);
+        return sessionId == null || sessionId.isBlank()
+                ? "channel:" + ctx.channel().id().asLongText()
+                : sessionId;
     }
 
     private void handleGetInfo(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
@@ -210,24 +267,36 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
     private void handlePairSetup(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         var session = resolveSession(ctx, request);
         var response = createRtspResponse(request);
-        session.getAirPlay().pairSetup(new ByteBufOutputStream(response.content()));
+        var pairing = mediaCoordinator.runControlOperation(controlSession, () -> {
+            session.getAirPlay().pairSetup(new ByteBufOutputStream(response.content()));
+            return true;
+        });
+        if (pairing.isEmpty()) {
+            response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
+        }
         sendResponse(ctx, request, response);
     }
 
     private void handlePairVerify(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         var session = resolveSession(ctx, request);
         var response = createRtspResponse(request);
-        boolean finishingVerification = request.content().isReadable() && request.content().getUnsignedByte(request.content().readerIndex()) == 0;
-        session.getAirPlay().pairVerify(new ByteBufInputStream(request.content()),
-                new ByteBufOutputStream(response.content()));
-        if (finishingVerification && session.getAirPlay().isPairVerified()
-                && ctx.channel().remoteAddress() instanceof InetSocketAddress remote) {
-            if (!peerPaired) {
+        boolean finishingVerification = request.content().isReadable()
+                && request.content().getUnsignedByte(request.content().readerIndex()) == 0;
+        var verification = mediaCoordinator.runControlOperation(controlSession, () -> {
+            session.getAirPlay().pairVerify(new ByteBufInputStream(request.content()),
+                    new ByteBufOutputStream(response.content()));
+            boolean verified = session.getAirPlay().isPairVerified();
+            if (finishingVerification && verified && !peerPaired
+                    && ctx.channel().remoteAddress() instanceof InetSocketAddress remote) {
                 sessionManager.markPeerPaired(remote.getAddress());
+                peerPaired = true;
             }
-            peerPaired = true;
-        }
-        if (finishingVerification && !session.getAirPlay().isPairVerified()) {
+            return verified;
+        });
+        if (verification.isEmpty()) {
+            response.content().clear();
+            response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
+        } else if (finishingVerification && !verification.get()) {
             response.setStatus(CLIENT_AUTHENTICATION_FAILURE);
         }
         sendResponse(ctx, request, response);
@@ -241,8 +310,15 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
             sendResponse(ctx, request, response);
             return;
         }
-        session.getAirPlay().fairPlaySetup(new ByteBufInputStream(request.content()),
-                new ByteBufOutputStream(response.content()));
+        var fairPlaySetup = mediaCoordinator.runControlOperation(controlSession, () -> {
+            session.getAirPlay().fairPlaySetup(new ByteBufInputStream(request.content()),
+                    new ByteBufOutputStream(response.content()));
+            return true;
+        });
+        if (fairPlaySetup.isEmpty()) {
+            response.content().clear();
+            response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
+        }
         sendResponse(ctx, request, response);
     }
 
@@ -259,40 +335,94 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
             sendResponse(ctx, request, response);
             return;
         }
-        var setupInfo = session.getAirPlay().rtspSetupInfo(new ByteBufInputStream(request.content()));
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/x-apple-binary-plist");
+        if (!sessionManager.isControlSessionUsable(controlSession, session)) {
+            response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
+            sendResponse(ctx, request, response);
+            return;
+        }
+        var pendingSetup = session.getAirPlay().prepareRtspSetup(new ByteBufInputStream(request.content()));
+        var setupInfo = pendingSetup.info();
         if (setupInfo.keySetup()) {
             if (!"NTP".equalsIgnoreCase(setupInfo.timingProtocol()) || setupInfo.timingPort() == 0) {
                 response.setStatus(HttpResponseStatus.NOT_IMPLEMENTED);
                 sendResponse(ctx, request, response);
                 return;
             }
-            var remoteAddress = (InetSocketAddress) ctx.channel().remoteAddress();
-            session.getTimingServer().start(remoteAddress.getAddress(), setupInfo.timingPort());
-            response.content().writeBytes(PropertyListUtil.prepareSetupTimingResponse(session.getTimingServer().getPort()));
+            var timingSetup = mediaCoordinator.setupTiming(controlSession, () -> {
+                var remoteAddress = (InetSocketAddress) ctx.channel().remoteAddress();
+                session.getTimingServer().start(remoteAddress.getAddress(), setupInfo.timingPort());
+                var timingResponse = PropertyListUtil.prepareSetupTimingResponse(
+                        session.getTimingServer().getPort());
+                pendingKeySetup = pendingSetup;
+                return timingResponse;
+            });
+            if (timingSetup.isEmpty()) {
+                response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
+                sendResponse(ctx, request, response);
+                return;
+            }
+            response.content().writeBytes(timingSetup.get());
         }
         var mediaStreamInfo = setupInfo.mediaStreamInfo();
         if (mediaStreamInfo.isPresent()) {
-            switch (mediaStreamInfo.get().getStreamType()) {
-                case AUDIO -> {
-                    var audioStreamInfo = (AudioStreamInfo) mediaStreamInfo.get();
-                    airPlayConsumer.onAudioFormat(audioStreamInfo);
-                    var remoteAddress = (InetSocketAddress) ctx.channel().remoteAddress();
-                    session.getAudioControlServer().start(remoteAddress.getAddress(), audioStreamInfo.getControlPort());
-                    session.getAudioServer().start(airPlayConsumer, audioStreamInfo);
-                    var setup = PropertyListUtil.prepareSetupAudioResponse(session.getAudioServer().getPort(),
-                            session.getAudioControlServer().getPort());
-                    response.content().writeBytes(setup);
+            var streamInfo = mediaStreamInfo.get();
+            var activeControl = controlSession;
+            try {
+                switch (streamInfo.getStreamType()) {
+                    case AUDIO -> {
+                        var audioStreamInfo = (AudioStreamInfo) streamInfo;
+                        var setup = mediaCoordinator.setupAudio(activeControl, sessionConsumer -> {
+                            var remoteAddress = (InetSocketAddress) ctx.channel().remoteAddress();
+                            session.getAudioControlServer().start(
+                                    remoteAddress.getAddress(), audioStreamInfo.getControlPort());
+                            session.getAudioServer().start(sessionConsumer, audioStreamInfo);
+                            sessionConsumer.onAudioFormat(audioStreamInfo);
+                            return PropertyListUtil.prepareSetupAudioResponse(
+                                    session.getAudioServer().getPort(),
+                                    session.getAudioControlServer().getPort());
+                        }, () -> commitPendingSetups(pendingSetup));
+                        if (setup.isPresent()) {
+                            response.content().writeBytes(setup.get());
+                        } else {
+                            response.content().clear();
+                            response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
+                        }
+                    }
+                    case VIDEO -> {
+                        var videoStreamInfo = (VideoStreamInfo) streamInfo;
+                        var setup = mediaCoordinator.setupVideo(activeControl, sessionConsumer -> {
+                            session.getVideoServer().start(sessionConsumer);
+                            session.getVideoServer().onVideoFormat(videoStreamInfo);
+                            return PropertyListUtil.prepareSetupVideoResponse(session.getVideoServer().getPort());
+                        }, () -> commitPendingSetups(pendingSetup));
+                        if (setup.isPresent()) {
+                            response.content().writeBytes(setup.get());
+                        } else {
+                            response.content().clear();
+                            response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
+                        }
+                    }
                 }
-                case VIDEO -> {
-                    session.getVideoServer().start(airPlayConsumer);
-                    session.getVideoServer().onVideoFormat((VideoStreamInfo) mediaStreamInfo.get());
-                    var setup = PropertyListUtil.prepareSetupVideoResponse(session.getVideoServer().getPort());
-                    response.content().writeBytes(setup);
+            } catch (Exception exception) {
+                if (exception instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
                 }
+                log.warn("Unable to set up AirPlay media for session {}: {}",
+                        session.getId(), exception.getMessage(), exception);
+                response.content().clear();
+                response.setStatus(HttpResponseStatus.SERVICE_UNAVAILABLE);
             }
         }
         sendResponse(ctx, request, response);
+    }
+
+    private void commitPendingSetups(AirPlay.PendingRtspSetup mediaSetup) {
+        if (pendingKeySetup != null) {
+            pendingKeySetup.commit();
+        }
+        mediaSetup.commit();
+        pendingKeySetup = null;
     }
 
     private boolean isAuthorized(Session session) {
@@ -301,24 +431,43 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
 
     private boolean rejectUnauthorized(ChannelHandlerContext ctx, FullHttpRequest request,
                                        Session session, FullHttpResponse response) {
-        boolean authorized = session != null && isAuthorized(session);
-        boolean localPlaylist = !RtspVersions.RTSP_1_0.equals(request.protocolVersion())
-                && request.uri().startsWith("/playlist")
-                && peerAddress(ctx) != null && peerAddress(ctx).isLoopbackAddress();
-        if (RtspVersions.RTSP_1_0.equals(request.protocolVersion())
-                ? authorized
-                : authorized || (session != null && session.isHttpAuthorized(peerAddress(ctx)))
-                        || (localPlaylist && session != null && session.hasHttpAuthorization())) {
+        boolean rtspRequest = RtspVersions.RTSP_1_0.equals(request.protocolVersion());
+        if (isAuthorizedRequest(ctx, request, session, rtspRequest)) {
             return false;
         }
         if (response == null) {
-            response = RtspVersions.RTSP_1_0.equals(request.protocolVersion())
+            response = rtspRequest
                     ? createRtspResponse(request)
                     : new DefaultFullHttpResponse(request.protocolVersion(), HttpResponseStatus.OK);
         }
         response.setStatus(CLIENT_AUTHENTICATION_FAILURE);
         sendResponse(ctx, request, response);
         return true;
+    }
+
+    private boolean isAuthorizedRequest(
+            ChannelHandlerContext ctx,
+            FullHttpRequest request,
+            Session session,
+            boolean rtspRequest) {
+        if (session == null) {
+            return false;
+        }
+        if (isAuthorized(session)) {
+            return true;
+        }
+        if (rtspRequest) {
+            return false;
+        }
+
+        InetAddress address = peerAddress(ctx);
+        if (session.isHttpAuthorized(address)) {
+            return true;
+        }
+        return request.uri().startsWith("/playlist")
+                && address != null
+                && address.isLoopbackAddress()
+                && session.hasHttpAuthorization();
     }
 
     private void handleRtspFeedback(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -379,28 +528,21 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
         if (rejectUnauthorized(ctx, request, session, response)) {
             return;
         }
+        var activeControl = controlSession;
+        if (activeControl == null || !sessionManager.isControlSessionUsable(activeControl, session)) {
+            sendResponse(ctx, request, response);
+            return;
+        }
         var mediaStreamInfo = session.getAirPlay().rtspTeardown(new ByteBufInputStream(request.content()));
         if (mediaStreamInfo.isPresent()) {
             switch (mediaStreamInfo.get().getStreamType()) {
-                case AUDIO -> {
-                    airPlayConsumer.onAudioSrcDisconnect();
-                    session.getAudioServer().stop();
-                    session.getAudioControlServer().stop();
-                }
-                case VIDEO -> {
-                    session.getVideoServer().stop();
-                }
+                case AUDIO -> mediaCoordinator.disconnectAudio(activeControl);
+                case VIDEO -> mediaCoordinator.disconnectVideo(activeControl);
             }
         } else {
-            airPlayConsumer.onAudioSrcDisconnect();
-            session.getAudioServer().stop();
-            session.getAudioControlServer().stop();
-            session.getVideoServer().stop();
+            mediaCoordinator.disconnectAll(activeControl);
         }
         sendResponse(ctx, request, response);
-        if (!session.hasActiveStreams()) {
-            sessionManager.removeSession(session.getId());
-        }
     }
 
     private void handleRtspAudioMode(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -639,6 +781,11 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
         if (rejectUnauthorized(ctx, request, session, null)) {
             return;
         }
+        if (!retainHttpSession(session)) {
+            sendResponse(ctx, request, new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
+                    HttpResponseStatus.SERVICE_UNAVAILABLE));
+            return;
+        }
         if (!session.getReverseContexts().containsKey("event")) {
             sendResponse(ctx, request, new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
                     HttpResponseStatus.SERVICE_UNAVAILABLE));
@@ -725,21 +872,27 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        sessionManager.removeContexts(ctx);
-        if (peerPaired) {
-            sessionManager.unmarkPeerPaired(peerAddress(ctx));
-        }
-        sessionManager.removeSession("channel:" + ctx.channel().id().asLongText());
-        if (!reverseConnection && rtspSessionId != null) {
-            sessionManager.removeSession(rtspSessionId);
-        }
-        if (reverseConnection && httpSessionId != null) {
-            var session = sessionManager.findSession(httpSessionId);
-            if (session != null && session.getReverseContexts().isEmpty()) {
-                sessionManager.removeSession(httpSessionId);
+        var disconnectedControl = controlSession;
+        controlSession = null;
+        try {
+            if (disconnectedControl != null) {
+                mediaCoordinator.controlDisconnected(disconnectedControl);
             }
+            sessionManager.removeContexts(ctx);
+            retainedHttpSessionIds.forEach(sessionManager::releaseHttpSession);
+            retainedHttpSessionIds.clear();
+            if (peerPaired) {
+                sessionManager.unmarkPeerPaired(peerAddress(ctx));
+            }
+            sessionManager.removeSession("channel:" + ctx.channel().id().asLongText());
+            if (!reverseConnection && rtspSessionId != null
+                    && (disconnectedControl == null
+                    || !rtspSessionId.equals(disconnectedControl.getSession().getId()))) {
+                sessionManager.removeSession(rtspSessionId);
+            }
+        } finally {
+            super.channelInactive(ctx);
         }
-        super.channelInactive(ctx);
     }
 
     @Override

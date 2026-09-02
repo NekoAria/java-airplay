@@ -45,16 +45,28 @@ public class Session {
         playlistRequestContexts.values().removeIf(context::equals);
     }
 
-    public void stop() {
+    public synchronized void stopVideo() {
         videoServer.stop();
+    }
+
+    public synchronized void stopAudio() {
         audioServer.stop();
         audioControlServer.stop();
+    }
+
+    public synchronized void stopTiming() {
         timingServer.stop();
+    }
+
+    public synchronized void stop() {
+        stopVideo();
+        stopAudio();
+        stopTiming();
         reverseContexts.clear();
         playlistRequestContexts.clear();
     }
 
-    public boolean hasActiveStreams() {
+    public synchronized boolean hasActiveStreams() {
         return videoServer.isRunning() || audioServer.isRunning();
     }
 

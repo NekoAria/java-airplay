@@ -6,6 +6,8 @@ import wtf.nanoka.airplay.lib.AirPlayIdentity;
 import java.net.InetAddress;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionManagerTest {
@@ -22,6 +24,20 @@ class SessionManagerTest {
         assertTrue(sessions.isPeerPaired(peer));
         sessions.unmarkPeerPaired(peer);
         assertFalse(sessions.isPeerPaired(peer));
+    }
+
+    @Test
+    void releasesNamedHttpSessionAfterItsLastConnectionCloses() {
+        var sessions = new SessionManager(AirPlayIdentity.random(), 4);
+        var session = sessions.getSession("http-session");
+
+        assertTrue(sessions.retainHttpSession(session));
+        assertTrue(sessions.retainHttpSession(session));
+        sessions.releaseHttpSession(session.getId());
+        assertSame(session, sessions.findSession(session.getId()));
+
+        sessions.releaseHttpSession(session.getId());
+        assertNull(sessions.findSession(session.getId()));
     }
 
     @Test
