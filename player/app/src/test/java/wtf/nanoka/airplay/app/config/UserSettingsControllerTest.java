@@ -69,6 +69,21 @@ class UserSettingsControllerTest {
     }
 
     @Test
+    void acceptsHevcWithFfmpegButStillRejectsUnsupportedPlayers() {
+        Path ffmpegSettingsFile = temporaryDirectory.resolve("ffmpeg.properties");
+        Path vlcSettingsFile = temporaryDirectory.resolve("vlc.properties");
+
+        var ffmpegResult = new UserSettingsController(null, ffmpegSettingsFile)
+                .save(settingsWithPlayer("ffmpeg"));
+        var vlcResult = new UserSettingsController(null, vlcSettingsFile)
+                .save(settingsWithPlayer("vlc"));
+
+        assertTrue(ffmpegResult.success(), ffmpegResult.message());
+        assertFalse(vlcResult.success());
+        assertFalse(Files.exists(vlcSettingsFile));
+    }
+
+    @Test
     void reconstructsRestartCommandWithoutDependingOnProcessArguments() throws Exception {
         try (var context = new GenericApplicationContext()) {
             context.getBeanFactory().registerSingleton("applicationArguments",
@@ -169,10 +184,14 @@ class UserSettingsControllerTest {
     }
 
     private ReceiverSettings validSettings() {
+        return settingsWithPlayer("gstreamer");
+    }
+
+    private ReceiverSettings settingsWithPlayer(String playerImplementation) {
         return new ReceiverSettings(
                 "Living Room", "3840", "2160", "60",
                 temporaryDirectory.resolve("identity.key").toString(), 4,
-                true, true, "gstreamer", true, true,
+                true, true, playerImplementation, true, true,
                 "d3d12h264dec", "0", 3, true, "quality");
     }
 

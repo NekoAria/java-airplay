@@ -13,6 +13,9 @@ package wtf.nanoka.airplay.player.gstreamer;
 
 import com.sun.jna.Platform;
 import com.sun.jna.platform.win32.Kernel32;
+import org.freedesktop.gstreamer.Gst;
+import org.freedesktop.gstreamer.Version;
+import org.freedesktop.gstreamer.glib.GLib;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -24,7 +27,19 @@ import java.util.stream.Stream;
  */
 class GstPlayerUtils {
 
+    private static boolean initialized;
+
     private GstPlayerUtils() {
+    }
+
+    static synchronized void initialize() {
+        if (initialized) {
+            return;
+        }
+        configurePaths();
+        GLib.setEnv("GST_DEBUG", "3", true);
+        Gst.init(Version.of(1, 10), "BasicPipeline");
+        initialized = true;
     }
 
     /**

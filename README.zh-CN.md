@@ -9,7 +9,7 @@
 
 [English](README.md) · [Issues](https://github.com/Arc-Lira/java-airplay/issues) · [Releases](https://github.com/Arc-Lira/java-airplay/releases)
 
-这是一个基于 Java 25 的 Windows 桌面 AirPlay 接收器，用于在局域网接收 iPhone 屏幕镜像。项目支持 H.264 视频、ALAC/AAC-ELD 音频，并通过 GStreamer 提供可选的实验性 HEVC 支持。
+这是一个基于 Java 25 的 Windows 桌面 AirPlay 接收器，用于在局域网接收 iPhone 屏幕镜像。项目支持 H.264 视频和 ALAC/AAC-ELD 音频，并通过 GStreamer 或 FFmpeg 视频后端提供可选的实验性 HEVC 支持。
 
 ## 核心能力
 
@@ -17,7 +17,7 @@
 |---|---|
 | 屏幕镜像 | 通过传统 AirPlay 传输接收 iPhone 屏幕镜像 |
 | 音视频接收 | H.264 视频与 ALAC/AAC-ELD 音频 |
-| 实验性 HEVC | 通过 GStreamer 后端提供可选 H.265 支持 |
+| 实验性 HEVC | 通过 GStreamer 或 FFmpeg 视频后端提供可选 H.265 支持 |
 | 硬件解码 | 自动选择或手动选择 Windows DXGI GPU 适配器 |
 | 稳定播放 | 默认保留编码参考帧，并在拥塞时使用 TCP 背压 |
 | 自适应显示 | 自动检测实际分辨率、帧率和编码格式，支持竖屏视频 |
@@ -79,6 +79,7 @@ ${user.home}/.java-airplay/application.properties
 | `airplay.fps` | `60` | 向发送端声明的最大帧率，实际发送帧率由时间戳测量 |
 | `airplay.requirePairing` | `true` | 接收媒体前是否要求完成 AirPlay 配对 |
 | `airplay.hevc` | `false` | 启用实验性 HEVC 协商 |
+| `player.implementation` | `gstreamer` | 选择播放后端；`ffmpeg` 要求 `PATH` 中存在 `ffplay`，音频仍使用 GStreamer |
 | `player.gstreamer.renderMode` | `balanced` | 选择 balanced、quality 或 low-latency 呈现模式 |
 | `player.gstreamer.videoQueueDepth` | `2` | Java 侧缓存的编码视频访问单元数量 |
 | `player.gstreamer.aggressiveFrameDropping` | `false` | 实验性模式，拥塞时丢弃编码帧 |
@@ -123,7 +124,8 @@ release/java-airplay-<version>.<yyMMdd>-windows-x64.zip.sha256
 | `server` | AirPlay 控制、视频、音频、时序和重传 |
 | `player:gstreamer` | 桌面界面和 GStreamer 播放后端 |
 | `player:app` | Spring Boot 应用、设置和系统托盘 |
-| `player:ffmpeg` / `player:vlc` | 备用 H.264 播放后端 |
+| `player:ffmpeg` | FFplay H.264/HEVC 视频与共享的 GStreamer 音频后端 |
+| `player:vlc` | 备用 H.264 播放后端 |
 | `player:h264-dump` | H.264 调试输出后端 |
 
 ## 许可证

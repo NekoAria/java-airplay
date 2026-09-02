@@ -69,8 +69,7 @@ public class PlayerConfig {
 
     @Bean
     @ConditionalOnProperty(value = "player.implementation", havingValue = "ffmpeg")
-    public AirPlayConsumer ffmpeg(AirPlayConfig airPlayConfig) {
-        requireH264Only(airPlayConfig, "FFmpeg");
+    public AirPlayConsumer ffmpeg() {
         return new FFmpegPlayer();
     }
 

@@ -409,10 +409,13 @@ public final class UserSettingsController implements SettingsController {
         player.getGstreamer().setRenderMode(settings.renderMode().trim());
         player.validate();
 
-        if (settings.hevcEnabled() && !"gstreamer".equalsIgnoreCase(settings.playerImplementation().trim())) {
-            throw new IllegalArgumentException("HEVC reception requires the GStreamer player");
+        String playerImplementation = player.getImplementation();
+        boolean supportsHevc = "gstreamer".equalsIgnoreCase(playerImplementation)
+                || "ffmpeg".equalsIgnoreCase(playerImplementation);
+        if (settings.hevcEnabled() && !supportsHevc) {
+            throw new IllegalArgumentException("HEVC reception requires the GStreamer or FFmpeg player");
         }
-        if (validateNativeRuntime && "gstreamer".equalsIgnoreCase(settings.playerImplementation().trim())) {
+        if (validateNativeRuntime && "gstreamer".equalsIgnoreCase(playerImplementation)) {
             GstPlayerDefault.validateConfiguration(
                     settings.videoDecoder(), settings.gpuAdapter(), settings.renderMode(), settings.hevcEnabled());
         }

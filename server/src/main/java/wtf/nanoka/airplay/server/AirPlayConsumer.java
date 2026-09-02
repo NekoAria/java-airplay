@@ -1,11 +1,10 @@
 package wtf.nanoka.airplay.server;
 
-import wtf.nanoka.airplay.lib.AudioStreamInfo;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
-public interface AirPlayConsumer {
+public interface AirPlayConsumer extends AirPlayAudioConsumer {
 
     void onVideoFormat(VideoStreamInfo videoStreamInfo);
 
@@ -19,16 +18,6 @@ public interface AirPlayConsumer {
     }
 
     void onVideoSrcDisconnect();
-
-    void onAudioFormat(AudioStreamInfo audioStreamInfo);
-
-    void onAudio(byte[] bytes);
-
-    default void onAudio(byte[] bytes, long timestamp, int sequenceNumber) {
-        onAudio(bytes);
-    }
-
-    void onAudioSrcDisconnect();
 
     // HLS stuff, youtube
     default void onMediaPlaylist(String playlistUri) {
