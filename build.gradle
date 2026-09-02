@@ -84,6 +84,7 @@ def windowsInstallerLanguageLicenseSource =
         windowsPackagingDirectory.file('ChineseSimplified.LICENSE.txt')
 def windowsDistributionValidator = windowsPackagingDirectory.file('validate_distribution.ps1')
 def windowsStartScript = layout.projectDirectory.file('scripts/start.ps1')
+def windowsBuildWorkflow = layout.projectDirectory.file('.github/workflows/build.yaml')
 def windowsReleaseWorkflow = layout.projectDirectory.file('.github/workflows/release.yaml')
 
 // Release artifacts carry the current UTC build date as a yyMMdd suffix. CI supplies
@@ -146,7 +147,8 @@ tasks.register('validateWindowsPackagingSources') {
     description = 'Validates the security and layout contracts of the Windows packaging sources.'
     inputs.files(windowsLauncherSource, windowsIconSource, windowsInstallerSource,
             windowsInstallerLanguageSource, windowsInstallerLanguageLicenseSource,
-            windowsDistributionValidator, windowsStartScript, windowsReleaseWorkflow)
+            windowsDistributionValidator, windowsStartScript, windowsBuildWorkflow,
+            windowsReleaseWorkflow)
     doLast {
         def launcher = windowsLauncherSource.asFile.getText('UTF-8')
         [
@@ -197,7 +199,15 @@ tasks.register('validateWindowsPackagingSources') {
                 throw new GradleException("Windows distribution validator is missing contract: ${required}")
             }
         }
+        def buildWorkflow = windowsBuildWorkflow.asFile.getText('UTF-8')
         def releaseWorkflow = windowsReleaseWorkflow.asFile.getText('UTF-8')
+        if (!buildWorkflow.contains('uses: ./.github/workflows/release.yaml')) {
+            throw new GradleException('Push and pull request CI must run the reusable Windows release workflow.')
+        }
+        if (!releaseWorkflow.contains('workflow_call:')
+                || !releaseWorkflow.contains("if: startsWith(github.ref, 'refs/tags/v')")) {
+            throw new GradleException('The Windows release workflow must be reusable without publishing CI builds.')
+        }
         if (releaseWorkflow.contains('-Pversion=${{')
                 || !releaseWorkflow.contains('"-Pversion=$env:RELEASE_VERSION"')) {
             throw new GradleException('The release tag must reach Gradle through a quoted environment variable.')
