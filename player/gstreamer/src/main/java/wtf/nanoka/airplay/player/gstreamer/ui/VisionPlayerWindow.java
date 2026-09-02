@@ -981,16 +981,17 @@ public final class VisionPlayerWindow implements AutoCloseable {
     }
 
     private void updateSettingsAvailability() {
-        boolean gstreamer = "gstreamer".equalsIgnoreCase(
-                Objects.toString(playerImplementationCombo.getSelectedItem(), ""));
+        String playerImplementation = Objects.toString(playerImplementationCombo.getSelectedItem(), "");
+        boolean gstreamer = "gstreamer".equalsIgnoreCase(playerImplementation);
+        boolean hevcCapable = gstreamer || "ffmpeg".equalsIgnoreCase(playerImplementation);
         renderModeCombo.setEnabled(gstreamer);
         decoderCombo.setEnabled(gstreamer);
         gpuAdapterCombo.setEnabled(gstreamer);
         videoQueueSpinner.setEnabled(gstreamer);
         aggressiveFrameDroppingToggle.setEnabled(gstreamer);
         swingToggle.setEnabled(gstreamer);
-        hevcToggle.setEnabled(gstreamer);
-        if (!gstreamer) {
+        hevcToggle.setEnabled(hevcCapable);
+        if (!hevcCapable) {
             hevcToggle.setSelected(false);
         }
     }

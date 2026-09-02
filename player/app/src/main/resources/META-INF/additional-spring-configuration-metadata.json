@@ -45,13 +45,13 @@
       "name": "airplay.hevc",
       "type": "java.lang.Boolean",
       "defaultValue": false,
-      "description": "Advertise and receive experimental HEVC screen mirroring. Requires the GStreamer player."
+      "description": "Advertise and receive experimental HEVC screen mirroring. Requires the GStreamer or FFmpeg player."
     },
     {
       "name": "player.implementation",
       "type": "java.lang.String",
       "defaultValue": "gstreamer",
-      "description": "Player implementation."
+      "description": "Player implementation. The ffmpeg option requires ffplay on PATH and uses GStreamer for audio."
     },
     {
       "name": "player.tray.enabled",

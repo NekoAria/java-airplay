@@ -9,7 +9,7 @@ If this project is useful to you, please consider giving the repository a Star o
 
 [简体中文](README.zh-CN.md) · [Issues](https://github.com/Arc-Lira/java-airplay/issues) · [Releases](https://github.com/Arc-Lira/java-airplay/releases)
 
-Java 25 desktop receiver for iPhone Screen Mirroring on a local network. It receives H.264 video, ALAC/AAC-ELD audio, and supports opt-in experimental HEVC through GStreamer.
+Java 25 desktop receiver for iPhone Screen Mirroring on a local network. It receives H.264 video and ALAC/AAC-ELD audio, with opt-in experimental HEVC through the GStreamer or FFmpeg video backend.
 
 ## Highlights
 
@@ -17,7 +17,7 @@ Java 25 desktop receiver for iPhone Screen Mirroring on a local network. It rece
 |---|---|
 | Screen mirroring | Receive iPhone screen mirroring over the legacy AirPlay transport |
 | Video and audio | H.264 video with ALAC/AAC-ELD audio |
-| Experimental HEVC | Optional H.265 support through the GStreamer backend |
+| Experimental HEVC | Optional H.265 support through the GStreamer or FFmpeg video backend |
 | Hardware decoding | Automatic or selected Windows DXGI GPU adapter |
 | Reliable playback | Preserves encoded reference frames and applies TCP backpressure by default |
 | Adaptive display | Detects the actual stream size, frame rate, and codec, including portrait video |
@@ -79,6 +79,7 @@ Common settings:
 | `airplay.fps` | `60` | Declared maximum frame rate; the sender rate is measured from timestamps |
 | `airplay.requirePairing` | `true` | Require AirPlay pairing before accepting media |
 | `airplay.hevc` | `false` | Enable experimental HEVC negotiation |
+| `player.implementation` | `gstreamer` | Select the playback backend; `ffmpeg` requires `ffplay` on `PATH` and uses GStreamer for audio |
 | `player.gstreamer.renderMode` | `balanced` | Choose balanced, quality, or low-latency presentation |
 | `player.gstreamer.videoQueueDepth` | `2` | Number of encoded video access units buffered in Java |
 | `player.gstreamer.aggressiveFrameDropping` | `false` | Experimental mode that drops encoded frames under pressure |
@@ -123,7 +124,8 @@ The release task is Windows-only and bundles the executable JAR, a compact Java 
 | `server` | AirPlay control, video, audio, timing, and retransmission |
 | `player:gstreamer` | Desktop UI and GStreamer playback backend |
 | `player:app` | Spring Boot application, settings, and system tray |
-| `player:ffmpeg` / `player:vlc` | Alternate H.264 playback backends |
+| `player:ffmpeg` | FFplay H.264/HEVC video with the shared GStreamer audio backend |
+| `player:vlc` | Alternate H.264 playback backend |
 | `player:h264-dump` | H.264 debugging output backend |
 
 ## License

@@ -6,11 +6,10 @@ import wtf.nanoka.airplay.server.AirPlayConsumer;
 import lombok.extern.slf4j.Slf4j;
 import org.freedesktop.gstreamer.*;
 import org.freedesktop.gstreamer.elements.AppSrc;
-import org.freedesktop.gstreamer.glib.GLib;
 
-import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
+import java.util.Objects;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
@@ -18,47 +17,33 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
     private static final long VIDEO_BACKPRESSURE_WARNING_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     static {
-        GstPlayerUtils.configurePaths();
-        GLib.setEnv("GST_DEBUG", "3", true);
-        Gst.init(Version.of(1, 10), "BasicPipeline");
+        GstPlayerUtils.initialize();
     }
 
     protected final Pipeline h264Pipeline;
     protected final Pipeline hevcPipeline;
-    private final Pipeline alacPipeline;
-    private final Pipeline aacEldPipeline;
 
     private final AppSrc h264Src;
     private final AppSrc hevcSrc;
-    private final AppSrc alacSrc;
-    private final AppSrc aacEldSrc;
+    private final GstAudioPlayer audioPlayer;
 
     private Pipeline hlsPipeline;
 
-    private AudioStreamInfo.CompressionType audioCompressionType;
     private final LinkedBlockingDeque<TimedMedia> videoQueue;
-    private final LinkedBlockingDeque<TimedMedia> audioQueue = new LinkedBlockingDeque<>(32);
     private final Object hlsLock = new Object();
     private final int videoQueueDepth;
     private final boolean aggressiveFrameDropping;
     private final long configuredVideoFrameDurationNanos;
-    private volatile int audioSampleRate = 44100;
-    private volatile int audioSamplesPerFrame = 480;
-    private long firstAudioTimestamp = Long.MIN_VALUE;
     private volatile Pipeline activeVideoPipeline;
     private volatile AppSrc activeVideoSrc;
     private volatile VideoStreamInfo.Codec activeVideoCodec = VideoStreamInfo.Codec.UNKNOWN;
-    private byte[] videoParameterSets;
-    private boolean prependVideoParameterSets;
-    private boolean awaitingVideoKeyframe;
+    private final VideoAccessUnitGate videoAccessUnitGate = new VideoAccessUnitGate();
     private volatile long videoGeneration;
     protected final Object videoTransitionLock = new Object();
     private int videoPushesInFlight;
-    private int audioPushesInFlight;
     private volatile long lastVideoBackpressureWarningNanos;
     private volatile boolean closed;
     private final Thread videoFeeder;
-    private final Thread audioFeeder;
 
     public GstPlayer() {
         this(60, 3, null);
@@ -83,48 +68,59 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
         this.aggressiveFrameDropping = aggressiveFrameDropping;
         videoQueue = new LinkedBlockingDeque<>(this.videoQueueDepth);
         configuredVideoFrameDurationNanos = TimeUnit.SECONDS.toNanos(1) / Math.max(1, fps);
-        h264Pipeline = h264PipelineDescription == null
-                ? createH264Pipeline()
-                : (Pipeline) Gst.parseLaunch(h264PipelineDescription);
-        h264Src = (AppSrc) h264Pipeline.getElementByName("h264-src");
-        configureVideoSource(h264Src,
-                "video/x-h264,colorimetry=bt709,stream-format=(string)byte-stream,alignment=(string)au");
 
-        hevcPipeline = hevcPipelineDescription == null
-                ? null
-                : (Pipeline) Gst.parseLaunch(hevcPipelineDescription);
-        hevcSrc = hevcPipeline == null ? null : (AppSrc) hevcPipeline.getElementByName("hevc-src");
-        if (hevcSrc != null) {
-            configureVideoSource(hevcSrc,
-                    "video/x-h265,stream-format=(string)byte-stream,alignment=(string)au");
+        Pipeline createdH264Pipeline = null;
+        Pipeline createdHevcPipeline = null;
+        AppSrc createdH264Src = null;
+        AppSrc createdHevcSrc = null;
+        GstAudioPlayer createdAudioPlayer = null;
+        Thread createdVideoFeeder = null;
+        try {
+            createdH264Pipeline = h264PipelineDescription == null
+                    ? createH264Pipeline()
+                    : (Pipeline) Gst.parseLaunch(h264PipelineDescription);
+            createdH264Pipeline = Objects.requireNonNull(
+                    createdH264Pipeline, "H.264 pipeline");
+            createdH264Src = Objects.requireNonNull(
+                    (AppSrc) createdH264Pipeline.getElementByName("h264-src"), "h264-src");
+            configureVideoSource(createdH264Src,
+                    "video/x-h264,colorimetry=bt709,stream-format=(string)byte-stream,alignment=(string)au");
+
+            createdHevcPipeline = hevcPipelineDescription == null
+                    ? null
+                    : (Pipeline) Gst.parseLaunch(hevcPipelineDescription);
+            createdHevcSrc = createdHevcPipeline == null ? null : Objects.requireNonNull(
+                    (AppSrc) createdHevcPipeline.getElementByName("hevc-src"), "hevc-src");
+            if (createdHevcSrc != null) {
+                configureVideoSource(createdHevcSrc,
+                        "video/x-h265,stream-format=(string)byte-stream,alignment=(string)au");
+            }
+
+            createdAudioPlayer = new GstAudioPlayer();
+            createdVideoFeeder = Thread.ofPlatform()
+                    .name("gstreamer-video-feeder")
+                    .daemon(true)
+                    .unstarted(this::feedVideo);
+        } catch (RuntimeException | Error failure) {
+            cleanupAfterConstructionFailure(
+                    createdVideoFeeder, createdAudioPlayer,
+                    createdHevcPipeline, createdH264Pipeline, failure);
+            throw failure;
         }
 
-        alacPipeline = (Pipeline) Gst.parseLaunch("appsrc name=alac-src ! avdec_alac ! audioconvert "
-                + "! audioresample ! clocksync sync=true sync-to-first=true ! autoaudiosink sync=false");
-
-        alacSrc = (AppSrc) alacPipeline.getElementByName("alac-src");
-        alacSrc.setStreamType(AppSrc.StreamType.STREAM);
-        alacSrc.set("is-live", true);
-        alacSrc.set("format", Format.TIME);
-        alacSrc.set("emit-signals", false);
-        alacSrc.set("block", true);
-        alacSrc.set("max-buffers", 32L);
-        alacSrc.setMaxBytes(512 * 1024);
-
-        aacEldPipeline = (Pipeline) Gst.parseLaunch("appsrc name=aac-eld-src ! avdec_aac ! audioconvert "
-                + "! audioresample ! clocksync sync=true sync-to-first=true ! autoaudiosink sync=false");
-
-        aacEldSrc = (AppSrc) aacEldPipeline.getElementByName("aac-eld-src");
-        aacEldSrc.setStreamType(AppSrc.StreamType.STREAM);
-        aacEldSrc.set("is-live", true);
-        aacEldSrc.set("format", Format.TIME);
-        aacEldSrc.set("emit-signals", false);
-        aacEldSrc.set("block", true);
-        aacEldSrc.set("max-buffers", 32L);
-        aacEldSrc.setMaxBytes(512 * 1024);
-
-        videoFeeder = Thread.ofPlatform().name("gstreamer-video-feeder").daemon(true).start(this::feedVideo);
-        audioFeeder = Thread.ofPlatform().name("gstreamer-audio-feeder").daemon(true).start(this::feedAudio);
+        h264Pipeline = createdH264Pipeline;
+        hevcPipeline = createdHevcPipeline;
+        h264Src = createdH264Src;
+        hevcSrc = createdHevcSrc;
+        audioPlayer = createdAudioPlayer;
+        videoFeeder = createdVideoFeeder;
+        try {
+            videoFeeder.start();
+        } catch (RuntimeException | Error failure) {
+            cleanupAfterConstructionFailure(
+                    videoFeeder, audioPlayer, hevcPipeline, h264Pipeline, failure);
+            throw failure;
+        }
         if (aggressiveFrameDropping) {
             log.warn("Experimental aggressive encoded-frame dropping is enabled; predicted frames may corrupt");
         }
@@ -166,21 +162,10 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
                 log.debug("Ignoring a video access unit before codec detection");
                 return;
             }
-            byte[] detectedParameterSets = leadingParameterSets(bytes, activeVideoCodec);
-            if (detectedParameterSets != null) {
-                videoParameterSets = detectedParameterSets;
-            }
-            if (awaitingVideoKeyframe && !containsRandomAccessUnit(bytes, activeVideoCodec)) {
+            byte[] accessUnit = videoAccessUnitGate.accept(bytes);
+            if (accessUnit == null) {
                 return;
             }
-            byte[] accessUnit = bytes;
-            if (prependVideoParameterSets) {
-                if (detectedParameterSets == null && videoParameterSets != null) {
-                    accessUnit = concatenate(videoParameterSets, bytes);
-                }
-                prependVideoParameterSets = false;
-            }
-            awaitingVideoKeyframe = false;
             media = new TimedMedia(accessUnit, timestamp, activeVideoSrc, videoGeneration);
         }
         try {
@@ -211,34 +196,22 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
 
     @Override
     public void onAudioFormat(AudioStreamInfo audioStreamInfo) {
-        this.audioCompressionType = audioStreamInfo.getCompressionType();
-        audioSampleRate = audioStreamInfo.getSampleRate() > 0 ? audioStreamInfo.getSampleRate() : 44100;
-        audioSamplesPerFrame = audioStreamInfo.getSamplesPerFrame() > 0 ? audioStreamInfo.getSamplesPerFrame() : 480;
-        audioQueue.clear();
-        firstAudioTimestamp = Long.MIN_VALUE;
-        configureAudioCaps();
-        switch (audioCompressionType) {
-            case ALAC -> alacPipeline.play();
-            case AAC_ELD -> aacEldPipeline.play();
-            default -> log.warn("Audio codec {} is advertised but not playable by this receiver", audioCompressionType);
-        }
+        audioPlayer.onAudioFormat(audioStreamInfo);
     }
 
     @Override
     public void onAudio(byte[] bytes) {
-        onAudio(bytes, -1, 0);
+        audioPlayer.onAudio(bytes);
     }
 
     @Override
     public void onAudio(byte[] bytes, long timestamp, int sequenceNumber) {
-        offerLatest(audioQueue, new TimedMedia(bytes, timestamp));
+        audioPlayer.onAudio(bytes, timestamp, sequenceNumber);
     }
 
     @Override
     public void onAudioSrcDisconnect() {
-        audioQueue.clear();
-        alacPipeline.stop();
-        aacEldPipeline.stop();
+        audioPlayer.onAudioSrcDisconnect();
     }
 
     @Override
@@ -308,15 +281,6 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
         return AirPlayConsumer.super.playbackInfo();
     }
 
-    private void configureAudioCaps() {
-        String alacCodecData = String.format("00000024616c616300000000000001600010280a0e0200ff000000000000000000%08x",
-                audioSampleRate);
-        alacSrc.setCaps(Caps.fromString("audio/x-alac,mpegversion=(int)4,channels=(int)2,rate=(int)"
-                + audioSampleRate + ",stream-format=raw,codec_data=(buffer)" + alacCodecData));
-        aacEldSrc.setCaps(Caps.fromString("audio/mpeg,mpegversion=(int)4,channels=(int)2,rate=(int)"
-                + audioSampleRate + ",stream-format=raw,codec_data=(buffer)f8e85000"));
-    }
-
     private void feedVideo() {
         long feederGeneration = Long.MIN_VALUE;
         long firstTimestamp = Long.MIN_VALUE;
@@ -344,27 +308,6 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
                 log.warn("Unable to feed GStreamer video: {}", e.getMessage());
-            }
-        }
-    }
-
-    private void feedAudio() {
-        while (!Thread.currentThread().isInterrupted()) {
-            try {
-                TimedMedia media = audioQueue.takeFirst();
-                if (firstAudioTimestamp == Long.MIN_VALUE && media.timestamp() >= 0) {
-                    firstAudioTimestamp = media.timestamp();
-                }
-                long presentationTime = media.timestamp() >= 0 && firstAudioTimestamp != Long.MIN_VALUE
-                        ? unsignedRtpDelta(firstAudioTimestamp, media.timestamp()) * TimeUnit.SECONDS.toNanos(1) / audioSampleRate
-                        : 0;
-                long duration = (long) audioSamplesPerFrame * TimeUnit.SECONDS.toNanos(1) / audioSampleRate;
-                AppSrc source = audioCompressionType == AudioStreamInfo.CompressionType.ALAC ? alacSrc : aacEldSrc;
-                pushAudioBufferIfOpen(source, media.bytes(), presentationTime, duration);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                log.warn("Unable to feed GStreamer audio: {}", e.getMessage());
             }
         }
     }
@@ -466,11 +409,7 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
                 if (closed) {
                     return;
                 }
-                if (activeVideoCodec != codec) {
-                    videoParameterSets = null;
-                    prependVideoParameterSets = false;
-                }
-                awaitingVideoKeyframe = true;
+                videoAccessUnitGate.activate(codec);
                 videoGeneration++;
                 videoQueue.clear();
                 activeVideoPipeline = pipeline;
@@ -481,10 +420,10 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
                 pipeline.play();
             } catch (RuntimeException | Error failure) {
                 synchronized (this) {
-                if (activeVideoPipeline == pipeline) {
+                    if (activeVideoPipeline == pipeline) {
                         invalidateVideoPipeline();
                         activeVideoCodec = VideoStreamInfo.Codec.UNKNOWN;
-                        awaitingVideoKeyframe = false;
+                        videoAccessUnitGate.deactivate();
                     }
                 }
                 pipeline.stop();
@@ -500,28 +439,9 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
             synchronized (this) {
                 pipeline = invalidateVideoPipeline();
                 activeVideoCodec = VideoStreamInfo.Codec.UNKNOWN;
-                videoParameterSets = null;
-                prependVideoParameterSets = false;
-                awaitingVideoKeyframe = false;
+                videoAccessUnitGate.deactivate();
             }
             stopAndDrainVideoPipeline(pipeline);
-        }
-    }
-
-    private void pushAudioBufferIfOpen(AppSrc source, byte[] bytes, long presentationTime, long duration) {
-        synchronized (this) {
-            if (closed) {
-                return;
-            }
-            audioPushesInFlight++;
-        }
-        try {
-            pushBuffer(source, bytes, presentationTime, duration, "audio");
-        } finally {
-            synchronized (this) {
-                audioPushesInFlight--;
-                notifyAll();
-            }
         }
     }
 
@@ -546,7 +466,7 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
                 if (closed) {
                     return false;
                 }
-                prependVideoParameterSets = videoParameterSets != null;
+                videoAccessUnitGate.prepareRestart();
             }
             activateVideoPipeline(codec);
             return true;
@@ -586,68 +506,6 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
         element.close();
     }
 
-    private boolean containsRandomAccessUnit(byte[] accessUnit, VideoStreamInfo.Codec codec) {
-        int offset = 0;
-        while (offset + 5 <= accessUnit.length && hasStartCode(accessUnit, offset)) {
-            int nalStart = offset + 4;
-            int next = findStartCode(accessUnit, nalStart + 1);
-            int nalType = codec == VideoStreamInfo.Codec.HEVC
-                    ? (accessUnit[nalStart] >> 1) & 0x3f
-                    : accessUnit[nalStart] & 0x1f;
-            if (codec == VideoStreamInfo.Codec.H264 && nalType == 5) {
-                return true;
-            }
-            if (codec == VideoStreamInfo.Codec.HEVC && nalType >= 16 && nalType <= 21) {
-                return true;
-            }
-            offset = next >= 0 ? next : accessUnit.length;
-        }
-        return false;
-    }
-
-    private byte[] leadingParameterSets(byte[] accessUnit, VideoStreamInfo.Codec codec) {
-        int offset = 0;
-        int parameterSetsEnd = 0;
-        while (offset + 5 <= accessUnit.length && hasStartCode(accessUnit, offset)) {
-            int nalStart = offset + 4;
-            int next = findStartCode(accessUnit, nalStart + 1);
-            int nalEnd = next >= 0 ? next : accessUnit.length;
-            int nalType = codec == VideoStreamInfo.Codec.HEVC
-                    ? (accessUnit[nalStart] >> 1) & 0x3f
-                    : accessUnit[nalStart] & 0x1f;
-            boolean parameterSet = codec == VideoStreamInfo.Codec.HEVC
-                    ? nalType >= 32 && nalType <= 34
-                    : nalType == 7 || nalType == 8;
-            if (!parameterSet) {
-                break;
-            }
-            parameterSetsEnd = nalEnd;
-            offset = nalEnd;
-        }
-        return parameterSetsEnd == 0 ? null : Arrays.copyOf(accessUnit, parameterSetsEnd);
-    }
-
-    private boolean hasStartCode(byte[] bytes, int offset) {
-        return bytes.length - offset >= 4
-                && bytes[offset] == 0 && bytes[offset + 1] == 0
-                && bytes[offset + 2] == 0 && bytes[offset + 3] == 1;
-    }
-
-    private int findStartCode(byte[] bytes, int offset) {
-        for (int index = offset; index <= bytes.length - 4; index++) {
-            if (hasStartCode(bytes, index)) {
-                return index;
-            }
-        }
-        return -1;
-    }
-
-    private byte[] concatenate(byte[] first, byte[] second) {
-        byte[] combined = Arrays.copyOf(first, first.length + second.length);
-        System.arraycopy(second, 0, combined, first.length, second.length);
-        return combined;
-    }
-
     private long fixedPointDeltaNanos(long first, long current) {
         long delta = current - first;
         long seconds = delta >> 32;
@@ -655,77 +513,123 @@ public abstract class GstPlayer implements AirPlayConsumer, AutoCloseable {
         return seconds * TimeUnit.SECONDS.toNanos(1) + ((fraction * TimeUnit.SECONDS.toNanos(1)) >>> 32);
     }
 
-    private long unsignedRtpDelta(long first, long current) {
-        return (current - first) & 0xffff_ffffL;
-    }
-
     private record TimedMedia(byte[] bytes, long timestamp, AppSrc source, long generation) {
-
-        private TimedMedia(byte[] bytes, long timestamp) {
-            this(bytes, timestamp, null, 0);
-        }
     }
 
     @Override
     public void close() {
+        Throwable failure = null;
         synchronized (videoTransitionLock) {
             Pipeline pipeline;
             synchronized (this) {
+                if (closed) {
+                    return;
+                }
                 closed = true;
                 pipeline = invalidateVideoPipeline();
                 activeVideoCodec = VideoStreamInfo.Codec.UNKNOWN;
-                videoParameterSets = null;
-                prependVideoParameterSets = false;
+                videoAccessUnitGate.deactivate();
             }
-            stopAndDrainVideoPipeline(pipeline);
+            try {
+                stopAndDrainVideoPipeline(pipeline);
+            } catch (RuntimeException | Error closeFailure) {
+                failure = closeFailure;
+            }
         }
+
         videoFeeder.interrupt();
-        audioFeeder.interrupt();
         videoQueue.clear();
-        audioQueue.clear();
-        h264Pipeline.stop();
+        failure = runLifecycleAction(failure, h264Pipeline::stop);
         if (hevcPipeline != null) {
-            hevcPipeline.stop();
+            failure = runLifecycleAction(failure, hevcPipeline::stop);
         }
-        alacPipeline.stop();
-        aacEldPipeline.stop();
+
+        Pipeline hlsToClose;
         synchronized (hlsLock) {
-            if (hlsPipeline != null) {
-                stopAndClose(hlsPipeline);
-                hlsPipeline = null;
-            }
+            hlsToClose = hlsPipeline;
+            hlsPipeline = null;
         }
+        if (hlsToClose != null) {
+            failure = runLifecycleAction(failure, () -> stopAndClose(hlsToClose));
+        }
+
+        failure = runLifecycleAction(failure, audioPlayer::close);
         joinFeeder(videoFeeder);
-        joinFeeder(audioFeeder);
-        waitForAudioPushes();
-        h264Pipeline.close();
+        failure = runLifecycleAction(failure, h264Pipeline::close);
         if (hevcPipeline != null) {
-            hevcPipeline.close();
+            failure = runLifecycleAction(failure, hevcPipeline::close);
         }
-        alacPipeline.close();
-        aacEldPipeline.close();
+        rethrowUnchecked(failure);
     }
 
-    private void waitForAudioPushes() {
-        boolean interrupted = false;
-        synchronized (this) {
-            while (audioPushesInFlight > 0) {
-                try {
-                    wait();
-                } catch (InterruptedException e) {
-                    interrupted = true;
-                }
-            }
+    private static void cleanupAfterConstructionFailure(
+            Thread feeder,
+            GstAudioPlayer audio,
+            Pipeline hevc,
+            Pipeline h264,
+            Throwable failure) {
+        if (feeder != null && feeder.isAlive()) {
+            feeder.interrupt();
         }
-        if (interrupted) {
-            Thread.currentThread().interrupt();
+        if (audio != null) {
+            suppressCleanupFailure(failure, audio::close);
+        }
+        cleanupPipelineAfterConstructionFailure(hevc, failure);
+        cleanupPipelineAfterConstructionFailure(h264, failure);
+    }
+
+    private static void cleanupPipelineAfterConstructionFailure(Pipeline pipeline, Throwable failure) {
+        if (pipeline == null) {
+            return;
+        }
+        suppressCleanupFailure(failure, pipeline::stop);
+        suppressCleanupFailure(failure, pipeline::close);
+    }
+
+    private static void suppressCleanupFailure(Throwable failure, Runnable cleanup) {
+        try {
+            cleanup.run();
+        } catch (RuntimeException | Error cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    private static Throwable runLifecycleAction(Throwable failure, Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException | Error actionFailure) {
+            if (failure == null) {
+                return actionFailure;
+            }
+            failure.addSuppressed(actionFailure);
+        }
+        return failure;
+    }
+
+    private static void rethrowUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (failure instanceof Error error) {
+            throw error;
         }
     }
 
     private void joinFeeder(Thread feeder) {
-        try {
-            feeder.join(TimeUnit.SECONDS.toMillis(3));
-        } catch (InterruptedException e) {
+        boolean interrupted = false;
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (feeder.isAlive()) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                break;
+            }
+            try {
+                TimeUnit.NANOSECONDS.timedJoin(feeder, remaining);
+            } catch (InterruptedException error) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
             Thread.currentThread().interrupt();
         }
         if (feeder.isAlive()) {
