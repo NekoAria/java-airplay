@@ -4,12 +4,15 @@ plugins {
 }
 
 dependencies {
+    implementation project(':lib')
     implementation project(':server')
     implementation project(':player:gstreamer')
     implementation project(':player:h264-dump')
     implementation project(':player:vlc')
     implementation project(':player:ffmpeg')
 
+    implementation "net.java.dev.jna:jna:${rootProject.ext.jnaVersion}"
+    implementation "net.java.dev.jna:jna-platform:${rootProject.ext.jnaVersion}"
     implementation 'org.springframework.boot:spring-boot-starter'
 
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
