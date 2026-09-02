@@ -195,7 +195,7 @@ public class FFmpegPlayer implements AirPlayConsumer, AutoCloseable {
 
         try {
             process.getOutputStream().close();
-        } catch (IOException failure) {
+        } catch (IOException | RuntimeException failure) {
             log.debug("Unable to close FFplay input: {}", failure.getMessage());
         }
         try {
