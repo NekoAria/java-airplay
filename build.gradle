@@ -206,8 +206,13 @@ tasks.register('validateWindowsPackagingSources') {
             throw new GradleException(
                     'Windows releases must execute the required native GStreamer test suite explicitly.')
         }
+        if (!releaseWorkflow.contains('$installDirectory = Join-Path $env:RUNNER_TEMP')
+                || !releaseWorkflow.contains('"/DIR=`"$installDirectory`""')) {
+            throw new GradleException('Windows installer validation must use an explicit temporary directory.')
+        }
         [
                 '#ifndef AppVersion',
+                'DefaultDirName={autopf}',
                 'MessagesFile: "ChineseSimplified.isl"',
                 'PrivilegesRequired=admin',
                 'MinVersion=10.0',

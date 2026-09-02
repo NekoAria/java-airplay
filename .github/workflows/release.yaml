@@ -100,14 +100,16 @@ jobs:
           if (!$installer) {
             throw 'Windows installer was not generated.'
           }
-          $installDirectory = Join-Path $env:ProgramFiles 'Java AirPlay Receiver'
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'java-airplay-installed'
           if (Test-Path -LiteralPath $installDirectory) {
-            throw "Default installation directory already exists: $installDirectory"
+            throw "Temporary installation directory already exists: $installDirectory"
           }
           $installLog = Join-Path $env:RUNNER_TEMP 'java-airplay-install.log'
           $installArguments = @(
             '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
-            '/TASKS=desktopicon', "/LOG=`"$installLog`""
+            '/TASKS=desktopicon',
+            "/DIR=`"$installDirectory`"",
+            "/LOG=`"$installLog`""
           )
           $installation = Start-Process -FilePath $installer.FullName `
             -ArgumentList $installArguments -Wait -PassThru
@@ -128,13 +130,14 @@ jobs:
             -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions `
             -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership
           $acl = Get-Acl -LiteralPath $installDirectory
+          # Ignore inherited rules from the writable runner temp directory.
           $rules = $acl.GetAccessRules(
-            $true, $true, [System.Security.Principal.SecurityIdentifier])
+            $true, $false, [System.Security.Principal.SecurityIdentifier])
           foreach ($rule in $rules) {
             if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow `
                 -and $broadWriteSids -contains $rule.IdentityReference.Value `
                 -and ($rule.FileSystemRights -band $unsafeRights) -ne 0) {
-              throw "Program Files payload grants broad write access: $rule"
+              throw "Installer explicitly grants broad write access: $rule"
             }
           }
 
