@@ -2,9 +2,9 @@ package wtf.nanoka.airplay.app.config;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.SpringApplication;
 import org.springframework.context.ApplicationContext;
 import wtf.nanoka.airplay.app.PlayerApp;
+import wtf.nanoka.airplay.app.lifecycle.ApplicationShutdown;
 import wtf.nanoka.airplay.player.gstreamer.ui.ReceiverSettings;
 import wtf.nanoka.airplay.player.gstreamer.ui.SettingsController;
 import wtf.nanoka.airplay.player.gstreamer.GstPlayerDefault;
@@ -22,6 +22,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -37,23 +38,39 @@ public final class UserSettingsController implements SettingsController {
     private final ApplicationContext applicationContext;
     private final Path settingsFile;
     private final boolean validateNativeRuntime;
+    private final ProcessStarter processStarter;
+    private final Runnable quitAction;
     private final AtomicBoolean restarting = new AtomicBoolean();
     private final AtomicBoolean restartUnlockDeferred = new AtomicBoolean();
 
-    UserSettingsController(ApplicationContext applicationContext) {
+    UserSettingsController(ApplicationContext applicationContext,
+                           ApplicationShutdown applicationShutdown) {
         this(applicationContext,
-                UserSettingsPropertySource.settingsFile(applicationContext.getEnvironment()), true);
+                UserSettingsPropertySource.settingsFile(applicationContext.getEnvironment()),
+                true,
+                ProcessBuilder::start,
+                Objects.requireNonNull(applicationShutdown, "applicationShutdown")::requestQuit);
     }
 
     UserSettingsController(ApplicationContext applicationContext, Path settingsFile) {
-        this(applicationContext, settingsFile, false);
+        this(applicationContext, settingsFile, false, ProcessBuilder::start, () -> {
+            throw new IllegalStateException("Application shutdown is not configured");
+        });
+    }
+
+    UserSettingsController(ApplicationContext applicationContext, Path settingsFile,
+                           ProcessStarter processStarter, Runnable quitAction) {
+        this(applicationContext, settingsFile, false, processStarter, quitAction);
     }
 
     private UserSettingsController(ApplicationContext applicationContext, Path settingsFile,
-                                   boolean validateNativeRuntime) {
+                                   boolean validateNativeRuntime, ProcessStarter processStarter,
+                                   Runnable quitAction) {
         this.applicationContext = applicationContext;
         this.settingsFile = settingsFile.toAbsolutePath().normalize();
         this.validateNativeRuntime = validateNativeRuntime;
+        this.processStarter = Objects.requireNonNull(processStarter, "processStarter");
+        this.quitAction = Objects.requireNonNull(quitAction, "quitAction");
     }
 
     @Override
@@ -128,7 +145,7 @@ public final class UserSettingsController implements SettingsController {
             processBuilder.environment().remove(RESTART_READY_TOKEN_ENV);
             processBuilder.environment().put(RESTART_READY_FILE_ENV, readyFile.toString());
             processBuilder.environment().put(RESTART_READY_TOKEN_ENV, readyToken);
-            replacement = processBuilder.start();
+            replacement = processStarter.start(processBuilder);
             if (!waitForReady(replacement, readyFile, readyToken, 30, TimeUnit.SECONDS)) {
                 if (!terminateAndWait(replacement)) {
                     deferRestartUnlock(replacement);
@@ -161,10 +178,7 @@ public final class UserSettingsController implements SettingsController {
             }
         }
 
-        Thread.ofPlatform().name("java-airplay-shutdown").start(() -> {
-            SpringApplication.exit(applicationContext, () -> 0);
-            System.exit(0);
-        });
+        quitAction.run();
         return Result.success("Restarting...");
     }
 
@@ -180,7 +194,7 @@ public final class UserSettingsController implements SettingsController {
         processBuilder.environment().remove(RESTART_READY_TOKEN_ENV);
         Process validation = null;
         try {
-            validation = processBuilder.start();
+            validation = processStarter.start(processBuilder);
             if (!validation.waitFor(20, TimeUnit.SECONDS)) {
                 boolean terminated = terminateAndWait(validation);
                 if (!terminated) {
@@ -470,5 +484,10 @@ public final class UserSettingsController implements SettingsController {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    @FunctionalInterface
+    interface ProcessStarter {
+        Process start(ProcessBuilder processBuilder) throws IOException;
     }
 }

@@ -1,5 +1,6 @@
 package wtf.nanoka.airplay.app.config;
 
+import wtf.nanoka.airplay.app.lifecycle.ApplicationShutdown;
 import wtf.nanoka.airplay.app.menu.SystemTrayMenu;
 import wtf.nanoka.airplay.player.ffmpeg.FFmpegPlayer;
 import wtf.nanoka.airplay.player.gstreamer.GstPlayerDefault;
@@ -80,13 +81,20 @@ public class PlayerConfig {
     }
 
     @Bean
-    public SettingsController settingsController(ApplicationContext context) {
-        return new UserSettingsController(context);
+    public ApplicationShutdown applicationShutdown(ApplicationContext context) {
+        return new ApplicationShutdown(context);
+    }
+
+    @Bean
+    public SettingsController settingsController(ApplicationContext context,
+                                                 ApplicationShutdown applicationShutdown) {
+        return new UserSettingsController(context, applicationShutdown);
     }
 
     @Bean
     @ConditionalOnProperty(value = "player.tray.enabled", havingValue = "true", matchIfMissing = true)
-    public SystemTrayMenu systemTrayMenu(ApplicationContext context, AirPlayConsumer airPlayConsumer) {
+    public SystemTrayMenu systemTrayMenu(ApplicationShutdown applicationShutdown,
+                                         AirPlayConsumer airPlayConsumer) {
         GstPlayerSwing swing = airPlayConsumer instanceof GstPlayerSwing player ? player : null;
         Runnable showWindow = swing != null ? swing::showWindow : null;
         Runnable showDetachedVideo = swing != null ? swing::showDetachedVideo : null;
@@ -107,8 +115,8 @@ public class PlayerConfig {
         Runnable trayUnavailable = swing != null
                 ? () -> swing.setCloseToTray(false)
                 : null;
-        SystemTrayMenu tray = new SystemTrayMenu(context, showWindow, showDetachedVideo, toggleVideoFullscreen,
-                toggleLanguage, labels, trayReady, trayUnavailable);
+        SystemTrayMenu tray = new SystemTrayMenu(applicationShutdown, showWindow, showDetachedVideo,
+                toggleVideoFullscreen, toggleLanguage, labels, trayReady, trayUnavailable);
         if (swing != null) {
             swing.addLanguageChangeListener(tray::updateLabels);
         }
