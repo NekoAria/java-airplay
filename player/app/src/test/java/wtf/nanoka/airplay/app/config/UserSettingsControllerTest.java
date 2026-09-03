@@ -16,7 +16,9 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -24,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UserSettingsControllerTest {
@@ -130,21 +133,40 @@ class UserSettingsControllerTest {
     }
 
     @Test
-    void successfulRestartRequestsFinalQuitOnlyOnce() throws Exception {
+    void successfulRestartStopsOldServiceBeforeReplacementReadyAndFinalQuit() throws Exception {
         AtomicInteger processStarts = new AtomicInteger();
         AtomicInteger quitRequests = new AtomicInteger();
         AtomicReference<Path> readinessFile = new AtomicReference<>();
+        var readinessCompleted = new CountDownLatch(1);
+        AtomicReference<Exception> readinessFailure = new AtomicReference<>();
+        List<String> restartEvents = new CopyOnWriteArrayList<>();
         var replacement = TestProcess.running(42_424L);
         UserSettingsController.ProcessStarter processStarter = processBuilder -> {
             int startNumber = processStarts.incrementAndGet();
             return switch (startNumber) {
                 case 1 -> TestProcess.exited(0);
                 case 2 -> {
+                    restartEvents.add("replacement-started");
                     var environment = processBuilder.environment();
                     Path readyFile = Path.of(environment.get(UserSettingsController.RESTART_READY_FILE_ENV));
                     String readyToken = environment.get(UserSettingsController.RESTART_READY_TOKEN_ENV);
                     readinessFile.set(readyFile);
-                    RestartReadiness.signal(readyFile, readyToken, replacement.pid());
+                    Thread signaler = Thread.ofPlatform()
+                            .name("test-replacement-readiness")
+                            .daemon(true)
+                            .unstarted(() -> {
+                                try {
+                                    Thread.sleep(100);
+                                    RestartReadiness.signal(readyFile, readyToken, replacement.pid());
+                                    restartEvents.add("replacement-ready");
+                                } catch (Exception failure) {
+                                    readinessFailure.set(failure);
+                                    replacement.destroy();
+                                } finally {
+                                    readinessCompleted.countDown();
+                                }
+                            });
+                    signaler.start();
                     yield replacement;
                 }
                 default -> throw new AssertionError("Unexpected process start " + startNumber);
@@ -153,13 +175,16 @@ class UserSettingsControllerTest {
 
         try (var context = new GenericApplicationContext()) {
             context.getBeanFactory().registerSingleton("applicationArguments", new DefaultApplicationArguments());
-            context.getBeanFactory().registerSingleton("airPlayServer", dormantAirPlayServer());
+            context.getBeanFactory().registerSingleton("airPlayServer", recordingAirPlayServer(restartEvents));
             context.refresh();
             var controller = new UserSettingsController(
                     context,
                     temporaryDirectory.resolve("application.properties"),
                     processStarter,
-                    quitRequests::incrementAndGet);
+                    () -> {
+                        restartEvents.add("quit-requested");
+                        quitRequests.incrementAndGet();
+                    });
 
             var first = controller.restart();
             var duplicate = controller.restart();
@@ -167,20 +192,33 @@ class UserSettingsControllerTest {
             assertTrue(first.success(), first.message());
             assertFalse(duplicate.success());
             assertEquals("A restart is already in progress.", duplicate.message());
+            assertTrue(readinessCompleted.await(1, TimeUnit.SECONDS));
+            assertNull(readinessFailure.get());
+            assertEquals(List.of(
+                    "old-service-stopped",
+                    "replacement-started",
+                    "replacement-ready",
+                    "quit-requested"), restartEvents);
             assertEquals(2, processStarts.get());
             assertEquals(1, quitRequests.get());
             assertFalse(Files.exists(readinessFile.get()));
         }
     }
 
-    private AirPlayServer dormantAirPlayServer() {
+    private AirPlayServer recordingAirPlayServer(List<String> restartEvents) {
         var airPlayConfig = new AirPlayConfig();
         airPlayConfig.setIdentityFile(temporaryDirectory.resolve("restart-identity.key").toString());
         AirPlayConsumer noOpConsumer = (AirPlayConsumer) Proxy.newProxyInstance(
                 AirPlayConsumer.class.getClassLoader(),
                 new Class<?>[]{AirPlayConsumer.class},
                 (proxy, method, arguments) -> null);
-        return new AirPlayServer(airPlayConfig, noOpConsumer);
+        return new AirPlayServer(airPlayConfig, noOpConsumer) {
+            @Override
+            public void stop() {
+                restartEvents.add("old-service-stopped");
+                super.stop();
+            }
+        };
     }
 
     private ReceiverSettings validSettings() {

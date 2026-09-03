@@ -3,10 +3,12 @@ package wtf.nanoka.airplay.app.menu;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Assumptions;
 
+import javax.swing.SwingUtilities;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Point;
 import java.awt.Rectangle;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -36,5 +38,16 @@ class SystemTrayMenuTest {
                 new Point(1910, 1070), new Rectangle(0, 0, 1920, 1040), new Dimension(200, 180));
 
         assertEquals(new Point(1710, 860), location);
+    }
+
+    @Test
+    void createsQuitMenuItemWithConfiguredLabelAndAction() throws Exception {
+        var quitRequests = new AtomicInteger();
+        var quitMenuItem = SystemTrayMenu.createQuitMenuItem("Quit", quitRequests::incrementAndGet);
+
+        SwingUtilities.invokeAndWait(quitMenuItem::doClick);
+
+        assertEquals("Quit", quitMenuItem.getText());
+        assertEquals(1, quitRequests.get());
     }
 }

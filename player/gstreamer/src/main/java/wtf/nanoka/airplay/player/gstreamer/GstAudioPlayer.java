@@ -14,6 +14,7 @@ import wtf.nanoka.airplay.server.AirPlayAudioConsumer;
 
 import java.util.Objects;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -22,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable {
 
-    private static final int AUDIO_QUEUE_CAPACITY = 32;
+    static final int AUDIO_QUEUE_CAPACITY = 32;
     private static final long FEEDER_JOIN_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(3);
     private static final String ALAC_PIPELINE_DESCRIPTION =
             "appsrc name=alac-src ! avdec_alac ! audioconvert ! audioresample "
@@ -31,14 +32,8 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
             "appsrc name=aac-eld-src ! avdec_aac ! audioconvert ! audioresample "
                     + "! clocksync sync=true sync-to-first=true ! autoaudiosink sync=false";
 
-    static {
-        GstPlayerUtils.initialize();
-    }
-
-    private final Pipeline alacPipeline;
-    private final Pipeline aacEldPipeline;
-    private final AppSrc alacSrc;
-    private final AppSrc aacEldSrc;
+    private final AudioPipeline alacPipeline;
+    private final AudioPipeline aacEldPipeline;
     private final LinkedBlockingDeque<TimedAudio> audioQueue =
             new LinkedBlockingDeque<>(AUDIO_QUEUE_CAPACITY);
     private final Object transitionLock = new Object();
@@ -46,7 +41,7 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
     private final RtpAudioTiming.SequenceTracker sequenceTracker =
             new RtpAudioTiming.SequenceTracker();
 
-    private AppSrc activeSource;
+    private AudioPipeline activePipeline;
     private int activeSampleRate = 44100;
     private int activeSamplesPerFrame = 480;
     private long generation;
@@ -54,31 +49,27 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
     private boolean closed;
 
     public GstAudioPlayer() {
-        AudioPipelines pipelines = createPipelines();
+        this(createNativePipelines(), Thread::new);
+    }
+
+    GstAudioPlayer(AudioPipelines pipelines, ThreadFactory feederThreadFactory) {
+        Objects.requireNonNull(pipelines, "pipelines");
         alacPipeline = pipelines.alac();
         aacEldPipeline = pipelines.aacEld();
 
-        AppSrc createdAlacSrc;
-        AppSrc createdAacEldSrc;
         Thread createdFeeder;
         try {
-            createdAlacSrc = Objects.requireNonNull(
-                    (AppSrc) alacPipeline.getElementByName("alac-src"), "alac-src");
-            createdAacEldSrc = Objects.requireNonNull(
-                    (AppSrc) aacEldPipeline.getElementByName("aac-eld-src"), "aac-eld-src");
-            configureSource(createdAlacSrc);
-            configureSource(createdAacEldSrc);
-            createdFeeder = Thread.ofPlatform()
-                    .name("gstreamer-audio-feeder")
-                    .daemon(true)
-                    .unstarted(this::feedAudio);
+            Objects.requireNonNull(feederThreadFactory, "feederThreadFactory");
+            createdFeeder = Objects.requireNonNull(
+                    feederThreadFactory.newThread(this::feedAudio),
+                    "feederThreadFactory.newThread()");
+            createdFeeder.setName("gstreamer-audio-feeder");
+            createdFeeder.setDaemon(true);
         } catch (RuntimeException | Error failure) {
             cleanupAfterConstructionFailure(aacEldPipeline, failure);
             cleanupAfterConstructionFailure(alacPipeline, failure);
             throw failure;
         }
-        alacSrc = createdAlacSrc;
-        aacEldSrc = createdAacEldSrc;
         audioFeeder = createdFeeder;
         try {
             audioFeeder.start();
@@ -98,7 +89,7 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
                     return;
                 }
                 generation++;
-                activeSource = null;
+                activePipeline = null;
                 sequenceTracker.reset();
                 audioQueue.clear();
             }
@@ -108,11 +99,9 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
             rethrowUnchecked(stopFailure);
 
             GstAudioFormat.Configuration format = GstAudioFormat.from(audioStreamInfo);
-            Pipeline pipeline = format.compressionType() == AudioStreamInfo.CompressionType.ALAC
+            AudioPipeline pipeline = format.compressionType() == AudioStreamInfo.CompressionType.ALAC
                     ? alacPipeline : aacEldPipeline;
-            AppSrc source = format.compressionType() == AudioStreamInfo.CompressionType.ALAC
-                    ? alacSrc : aacEldSrc;
-            source.setCaps(Caps.fromString(format.caps()));
+            pipeline.configure(format.caps());
             try {
                 pipeline.play();
             } catch (RuntimeException | Error failure) {
@@ -124,7 +113,7 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
                 throw failure;
             }
             synchronized (this) {
-                activeSource = source;
+                activePipeline = pipeline;
                 activeSampleRate = format.sampleRate();
                 activeSamplesPerFrame = format.samplesPerFrame();
             }
@@ -142,7 +131,7 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
     public void onAudio(byte[] bytes, long timestamp, int sequenceNumber) {
         Objects.requireNonNull(bytes, "bytes");
         synchronized (this) {
-            if (closed || activeSource == null) {
+            if (closed || activePipeline == null) {
                 return;
             }
             if (!sequenceTracker.accept(sequenceNumber)) {
@@ -150,7 +139,7 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
                 return;
             }
             TimedAudio audio = new TimedAudio(
-                    bytes, timestamp, sequenceNumber, activeSource, generation,
+                    bytes, timestamp, sequenceNumber, activePipeline, generation,
                     activeSampleRate, activeSamplesPerFrame);
             offerLatest(audioQueue, audio);
         }
@@ -164,7 +153,7 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
                     return;
                 }
                 generation++;
-                activeSource = null;
+                activePipeline = null;
                 sequenceTracker.reset();
                 audioQueue.clear();
             }
@@ -172,16 +161,6 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
             waitForPushes();
             rethrowUnchecked(failure);
         }
-    }
-
-    private void configureSource(AppSrc source) {
-        source.setStreamType(AppSrc.StreamType.STREAM);
-        source.set("is-live", true);
-        source.set("format", Format.TIME);
-        source.set("emit-signals", false);
-        source.set("block", true);
-        source.set("max-buffers", (long) AUDIO_QUEUE_CAPACITY);
-        source.setMaxBytes(512 * 1024);
     }
 
     private void feedAudio() {
@@ -211,39 +190,23 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
     }
 
     private synchronized boolean isCurrent(TimedAudio audio) {
-        return !closed && audio.generation() == generation && audio.source() == activeSource;
+        return !closed && audio.generation() == generation && audio.pipeline() == activePipeline;
     }
 
     private void pushAudioBufferIfCurrent(TimedAudio audio, long presentationTime, long duration) {
         synchronized (this) {
-            if (closed || audio.generation() != generation || audio.source() != activeSource) {
+            if (closed || audio.generation() != generation || audio.pipeline() != activePipeline) {
                 return;
             }
             pushesInFlight++;
         }
         try {
-            pushBuffer(audio.source(), audio.bytes(), presentationTime, duration);
+            audio.pipeline().push(audio.bytes(), presentationTime, duration);
         } finally {
             synchronized (this) {
                 pushesInFlight--;
                 notifyAll();
             }
-        }
-    }
-
-    private void pushBuffer(AppSrc source, byte[] bytes, long presentationTime, long duration) {
-        Buffer buffer = new Buffer(bytes.length);
-        var mapped = buffer.map(true);
-        try {
-            mapped.put(bytes);
-        } finally {
-            buffer.unmap();
-        }
-        buffer.setPresentationTimestamp(presentationTime);
-        buffer.setDuration(duration);
-        FlowReturn result = source.pushBuffer(buffer);
-        if (result != FlowReturn.OK && result != FlowReturn.FLUSHING) {
-            log.warn("GStreamer rejected audio buffer: {}", result);
         }
     }
 
@@ -301,7 +264,7 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
                 }
                 closed = true;
                 generation++;
-                activeSource = null;
+                activePipeline = null;
                 sequenceTracker.reset();
                 audioQueue.clear();
             }
@@ -336,7 +299,8 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
         return failure;
     }
 
-    private static AudioPipelines createPipelines() {
+    private static AudioPipelines createNativePipelines() {
+        GstPlayerUtils.initialize();
         Pipeline alac = null;
         Pipeline aacEld = null;
         try {
@@ -344,19 +308,31 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
                     (Pipeline) Gst.parseLaunch(ALAC_PIPELINE_DESCRIPTION), "ALAC pipeline");
             aacEld = Objects.requireNonNull(
                     (Pipeline) Gst.parseLaunch(AAC_ELD_PIPELINE_DESCRIPTION), "AAC-ELD pipeline");
-            return new AudioPipelines(alac, aacEld);
+            return new AudioPipelines(
+                    new NativeAudioPipeline(alac, "alac-src"),
+                    new NativeAudioPipeline(aacEld, "aac-eld-src"));
         } catch (RuntimeException | Error failure) {
             if (aacEld != null) {
-                cleanupAfterConstructionFailure(aacEld, failure);
+                cleanupNativeAfterConstructionFailure(aacEld, failure);
             }
             if (alac != null) {
-                cleanupAfterConstructionFailure(alac, failure);
+                cleanupNativeAfterConstructionFailure(alac, failure);
             }
             throw failure;
         }
     }
 
-    private static void cleanupAfterConstructionFailure(Element element, Throwable failure) {
+    private static void configureSource(AppSrc source) {
+        source.setStreamType(AppSrc.StreamType.STREAM);
+        source.set("is-live", true);
+        source.set("format", Format.TIME);
+        source.set("emit-signals", false);
+        source.set("block", true);
+        source.set("max-buffers", (long) AUDIO_QUEUE_CAPACITY);
+        source.setMaxBytes(512 * 1024);
+    }
+
+    private static void cleanupNativeAfterConstructionFailure(Element element, Throwable failure) {
         try {
             element.stop();
         } catch (RuntimeException | Error cleanupFailure) {
@@ -364,6 +340,19 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
         }
         try {
             element.close();
+        } catch (RuntimeException | Error cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    private static void cleanupAfterConstructionFailure(AudioPipeline pipeline, Throwable failure) {
+        try {
+            pipeline.stop();
+        } catch (RuntimeException | Error cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
+        try {
+            pipeline.close();
         } catch (RuntimeException | Error cleanupFailure) {
             failure.addSuppressed(cleanupFailure);
         }
@@ -378,14 +367,81 @@ public final class GstAudioPlayer implements AirPlayAudioConsumer, AutoCloseable
         }
     }
 
-    private record AudioPipelines(Pipeline alac, Pipeline aacEld) {
+    /** Keeps queue, timing, and lifecycle control independent from native GStreamer objects. */
+    interface AudioPipeline extends AutoCloseable {
+        void configure(String caps);
+
+        void play();
+
+        void stop();
+
+        void push(byte[] bytes, long presentationTime, long duration);
+
+        @Override
+        void close();
+    }
+
+    record AudioPipelines(AudioPipeline alac, AudioPipeline aacEld) {
+        AudioPipelines {
+            Objects.requireNonNull(alac, "alac");
+            Objects.requireNonNull(aacEld, "aacEld");
+        }
+    }
+
+    private static final class NativeAudioPipeline implements AudioPipeline {
+        private final Pipeline pipeline;
+        private final AppSrc source;
+
+        private NativeAudioPipeline(Pipeline pipeline, String sourceName) {
+            this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
+            source = Objects.requireNonNull(
+                    (AppSrc) pipeline.getElementByName(sourceName), sourceName);
+            configureSource(source);
+        }
+
+        @Override
+        public void configure(String caps) {
+            source.setCaps(Caps.fromString(caps));
+        }
+
+        @Override
+        public void play() {
+            pipeline.play();
+        }
+
+        @Override
+        public void stop() {
+            pipeline.stop();
+        }
+
+        @Override
+        public void push(byte[] bytes, long presentationTime, long duration) {
+            Buffer buffer = new Buffer(bytes.length);
+            var mapped = buffer.map(true);
+            try {
+                mapped.put(bytes);
+            } finally {
+                buffer.unmap();
+            }
+            buffer.setPresentationTimestamp(presentationTime);
+            buffer.setDuration(duration);
+            FlowReturn result = source.pushBuffer(buffer);
+            if (result != FlowReturn.OK && result != FlowReturn.FLUSHING) {
+                log.warn("GStreamer rejected audio buffer: {}", result);
+            }
+        }
+
+        @Override
+        public void close() {
+            pipeline.close();
+        }
     }
 
     private record TimedAudio(
             byte[] bytes,
             long timestamp,
             int sequenceNumber,
-            AppSrc source,
+            AudioPipeline pipeline,
             long generation,
             int sampleRate,
             int samplesPerFrame) {

@@ -150,10 +150,16 @@ public class SystemTrayMenu {
             popupMenu.add(languageMenuItem);
         }
         popupMenu.addSeparator();
-        quitMenuItem = new JMenuItem(initialLabels.quit());
-        quitMenuItem.addActionListener(event -> applicationShutdown.requestQuit());
+        quitMenuItem = createQuitMenuItem(initialLabels.quit(), applicationShutdown::requestQuit);
         popupMenu.add(quitMenuItem);
         applyMenuFont();
+    }
+
+    static JMenuItem createQuitMenuItem(String label, Runnable quitAction) {
+        Objects.requireNonNull(quitAction, "quitAction");
+        var menuItem = new JMenuItem(Objects.requireNonNull(label, "label"));
+        menuItem.addActionListener(event -> quitAction.run());
+        return menuItem;
     }
 
     public void updateLabels() {
