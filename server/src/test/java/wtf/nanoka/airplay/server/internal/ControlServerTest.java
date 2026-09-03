@@ -33,6 +33,9 @@ class ControlServerTest {
 
     private static final String KEY_SETUP_REQUEST = "one_mirroring_app/06_RTSP_SETUP_request.bin";
     private static final String AUDIO_SETUP_REQUEST = "one_mirroring_app/10_RTSP_SETUP_request.bin";
+    private static final String OK_STATUS = "RTSP/1.0 200 OK";
+    private static final String SERVICE_UNAVAILABLE_STATUS = "RTSP/1.0 503 Service Unavailable";
+    private static final String CONNECTION_CLOSED = "connection-closed";
     private static final byte[] HEADER_TERMINATOR = {'\r', '\n', '\r', '\n'};
     private static final Pattern CONTENT_LENGTH_HEADER =
             Pattern.compile("(?im)^Content-Length:\\s*(\\d+)\\s*$");
@@ -42,16 +45,13 @@ class ControlServerTest {
         var server = new ControlServer(config(), new NoopConsumer(), AirPlayIdentity.random());
         try {
             server.start();
-            int firstPort = server.getPort();
-            assertTrue(firstPort > 0);
-            try (var client = new Socket(InetAddress.getLoopbackAddress(), firstPort)) {
-                client.setSoTimeout(10_000);
+            assertTrue(server.getPort() > 0);
+            try (var client = connect(server)) {
                 assertTimeout(Duration.ofSeconds(10), server::stop);
                 assertTrue(connectionIsClosed(client));
             }
 
-            server.start();
-            assertTrue(server.getPort() > 0);
+            assertCanRestart(server);
         } finally {
             server.stop();
         }
@@ -61,17 +61,11 @@ class ControlServerTest {
     void externalStopDoesNotDeadlockWhenDisconnectCallbackReentersStop() throws Exception {
         var consumer = new DisconnectReentrantStopConsumer();
         var server = new ControlServer(config(), consumer, AirPlayIdentity.random());
-        consumer.stopAction = server::stop;
+        consumer.server = server;
         try {
             server.start();
-            try (var client = new Socket(InetAddress.getLoopbackAddress(), server.getPort())) {
-                client.setSoTimeout(10_000);
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        client,
-                        resource(KEY_SETUP_REQUEST)));
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        client,
-                        resource(AUDIO_SETUP_REQUEST)));
+            try (var client = connect(server)) {
+                assertSuccessfulSetup(client);
 
                 var stopFailure = new AtomicReference<Throwable>();
                 Thread stopper = Thread.ofPlatform().daemon(true).name("external-airplay-stop").start(() -> {
@@ -88,8 +82,7 @@ class ControlServerTest {
                 assertTrue(consumer.disconnectReturned.await(10, TimeUnit.SECONDS));
             }
 
-            server.start();
-            assertTrue(server.getPort() > 0);
+            assertCanRestart(server);
         } finally {
             server.stop();
         }
@@ -99,32 +92,25 @@ class ControlServerTest {
     void consumerStopThenStartFailsFastDuringAudioFormat() throws Exception {
         var consumer = new ReentrantServerStopConsumer();
         var server = new ControlServer(config(), consumer, AirPlayIdentity.random());
-        consumer.stopAction = server::stop;
-        consumer.startAction = server::start;
+        consumer.server = server;
         try {
             server.start();
-            try (var client = new Socket(InetAddress.getLoopbackAddress(), server.getPort())) {
-                client.setSoTimeout(10_000);
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        client,
-                        resource(KEY_SETUP_REQUEST)));
+            try (var client = connect(server)) {
+                assertResponse(OK_STATUS, client, resource(KEY_SETUP_REQUEST));
                 String setupOutcome = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
                     try {
-                        return exchange(
-                                client,
-                                resource(AUDIO_SETUP_REQUEST));
+                        return exchange(client, resource(AUDIO_SETUP_REQUEST));
                     } catch (IOException closedDuringStop) {
-                        return "connection-closed";
+                        return CONNECTION_CLOSED;
                     }
                 });
-                assertTrue("connection-closed".equals(setupOutcome)
-                        || "RTSP/1.0 503 Service Unavailable".equals(setupOutcome));
+                assertTrue(CONNECTION_CLOSED.equals(setupOutcome)
+                        || SERVICE_UNAVAILABLE_STATUS.equals(setupOutcome));
                 assertTrue(consumer.restartAttempted.await(10, TimeUnit.SECONDS));
                 assertTrue(consumer.restartFailure.get() instanceof IllegalStateException);
             }
 
-            server.start();
-            assertTrue(server.getPort() > 0);
+            assertCanRestart(server);
         } finally {
             server.stop();
         }
@@ -136,30 +122,15 @@ class ControlServerTest {
         var server = new ControlServer(config(), consumer, AirPlayIdentity.random());
         try {
             server.start();
-            var first = new Socket(InetAddress.getLoopbackAddress(), server.getPort());
-            try (first; var reconnecting = new Socket(InetAddress.getLoopbackAddress(), server.getPort())) {
-                first.setSoTimeout(10_000);
-                reconnecting.setSoTimeout(10_000);
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        first,
-                        resource(KEY_SETUP_REQUEST)));
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        first,
-                        resource(AUDIO_SETUP_REQUEST)));
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        reconnecting,
-                        feedbackRequest()));
+            try (var first = connect(server); var reconnecting = connect(server)) {
+                assertSuccessfulSetup(first);
+                assertResponse(OK_STATUS, reconnecting, feedbackRequest());
 
                 first.close();
                 assertTrue(consumer.disconnected.await(10, TimeUnit.SECONDS));
 
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        reconnecting,
-                        resource(KEY_SETUP_REQUEST)));
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        reconnecting,
-                        resource(AUDIO_SETUP_REQUEST)));
-                assertEquals(2, consumer.formats.get());
+                assertSuccessfulSetup(reconnecting);
+                assertEquals(2, consumer.formatCount.get());
             }
         } finally {
             server.stop();
@@ -172,21 +143,34 @@ class ControlServerTest {
         var server = new ControlServer(config(), consumer, AirPlayIdentity.random());
         try {
             server.start();
-            try (var client = new Socket(InetAddress.getLoopbackAddress(), server.getPort())) {
-                client.setSoTimeout(10_000);
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        client,
-                        resource(KEY_SETUP_REQUEST)));
-                assertEquals("RTSP/1.0 503 Service Unavailable", exchange(
-                        client,
-                        resource(AUDIO_SETUP_REQUEST)));
-                assertEquals("RTSP/1.0 200 OK", exchange(
-                        client,
-                        resource(AUDIO_SETUP_REQUEST)));
+            try (var client = connect(server)) {
+                assertResponse(OK_STATUS, client, resource(KEY_SETUP_REQUEST));
+                assertResponse(SERVICE_UNAVAILABLE_STATUS, client, resource(AUDIO_SETUP_REQUEST));
+                assertResponse(OK_STATUS, client, resource(AUDIO_SETUP_REQUEST));
             }
         } finally {
             server.stop();
         }
+    }
+
+    private static void assertCanRestart(ControlServer server) throws InterruptedException {
+        server.start();
+        assertTrue(server.getPort() > 0);
+    }
+
+    private static Socket connect(ControlServer server) throws IOException {
+        var client = new Socket(InetAddress.getLoopbackAddress(), server.getPort());
+        client.setSoTimeout(10_000);
+        return client;
+    }
+
+    private static void assertSuccessfulSetup(Socket client) throws IOException {
+        assertResponse(OK_STATUS, client, resource(KEY_SETUP_REQUEST));
+        assertResponse(OK_STATUS, client, resource(AUDIO_SETUP_REQUEST));
+    }
+
+    private static void assertResponse(String expectedStatus, Socket client, byte[] request) throws IOException {
+        assertEquals(expectedStatus, exchange(client, request));
     }
 
     private static boolean connectionIsClosed(Socket client) throws IOException {
@@ -207,7 +191,7 @@ class ControlServerTest {
     private static String readResponse(InputStream input) throws IOException {
         var headerBytes = new ByteArrayOutputStream();
         int matched = 0;
-        while (matched < 4) {
+        while (matched < HEADER_TERMINATOR.length) {
             int next = input.read();
             if (next < 0) {
                 throw new IOException("Control connection closed before a complete response");
@@ -251,30 +235,29 @@ class ControlServerTest {
 
     private static final class DisconnectReentrantStopConsumer extends NoopConsumer {
         private final CountDownLatch disconnectReturned = new CountDownLatch(1);
-        private Runnable stopAction;
+        private ControlServer server;
 
         @Override
         public void onAudioSrcDisconnect() {
-            stopAction.run();
+            server.stop();
             disconnectReturned.countDown();
         }
     }
 
     private static final class ReentrantServerStopConsumer extends NoopConsumer {
-        private final AtomicBoolean stopped = new AtomicBoolean();
+        private final AtomicBoolean stopInitiated = new AtomicBoolean();
         private final CountDownLatch restartAttempted = new CountDownLatch(1);
         private final AtomicReference<Throwable> restartFailure = new AtomicReference<>();
-        private Runnable stopAction;
-        private CheckedRunnable startAction;
+        private ControlServer server;
 
         @Override
         public void onAudioFormat(AudioStreamInfo audioStreamInfo) {
-            if (!stopped.compareAndSet(false, true)) {
+            if (!stopInitiated.compareAndSet(false, true)) {
                 return;
             }
-            stopAction.run();
+            server.stop();
             try {
-                startAction.run();
+                server.start();
             } catch (Throwable failure) {
                 restartFailure.set(failure);
             } finally {
@@ -283,25 +266,20 @@ class ControlServerTest {
         }
     }
 
-    @FunctionalInterface
-    private interface CheckedRunnable {
-        void run() throws Exception;
-    }
-
     private static final class DisconnectTrackingConsumer extends NoopConsumer {
         private final CountDownLatch disconnected = new CountDownLatch(1);
-        private final AtomicInteger formats = new AtomicInteger();
+        private final AtomicInteger formatCount = new AtomicInteger();
 
-        @Override public void onAudioFormat(AudioStreamInfo audioStreamInfo) { formats.incrementAndGet(); }
+        @Override public void onAudioFormat(AudioStreamInfo audioStreamInfo) { formatCount.incrementAndGet(); }
         @Override public void onAudioSrcDisconnect() { disconnected.countDown(); }
     }
 
     private static final class ThrowOnceAudioFormatConsumer extends NoopConsumer {
-        private final AtomicBoolean fail = new AtomicBoolean(true);
+        private final AtomicBoolean shouldFail = new AtomicBoolean(true);
 
         @Override
         public void onAudioFormat(AudioStreamInfo audioStreamInfo) {
-            if (fail.compareAndSet(true, false)) {
+            if (shouldFail.compareAndSet(true, false)) {
                 throw new IllegalStateException("simulated player setup failure");
             }
         }
