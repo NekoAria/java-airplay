@@ -129,7 +129,7 @@ This policy applies only to RTSP mirroring timing, video, and audio streams. HTT
 ./gradlew.bat :player:app:bootJar
 ```
 
-Build the complete Windows x64 distributions from the repository root. Packaging additionally requires Python 3 and Inno Setup 6.3 or newer.
+From the repository root, build the complete Windows x64 distributions. Packaging requires Python 3 and Inno Setup 6.5 or newer.
 
 ```powershell
 ./gradlew.bat release

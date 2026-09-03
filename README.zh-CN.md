@@ -129,7 +129,7 @@ Windows 安装包和便携版默认使用 GStreamer。源码使用 `ffmpeg` 时�
 ./gradlew.bat :player:app:bootJar
 ```
 
-在 Windows x64 环境中从项目根目录构建完整发行版；打包还需要 Python 3 和 Inno Setup 6.3 或更高版本：
+在 Windows x64 环境中，从项目根目录构建完整发行版。打包需要 Python 3 和 Inno Setup 6.5 或更高版本：
 
 ```powershell
 ./gradlew.bat release
