@@ -1,7 +1,7 @@
 # Release Output
 
 Run the following command from the repository root on Windows x64 with JDK 25,
-Python 3, and Inno Setup 6.3 or newer:
+Python 3, and Inno Setup 6.5 or newer:
 
 ```bat
 gradlew.bat release
