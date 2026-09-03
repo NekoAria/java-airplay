@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
@@ -44,8 +45,9 @@ class ControlServerTest {
             int firstPort = server.getPort();
             assertTrue(firstPort > 0);
             try (var client = new Socket(InetAddress.getLoopbackAddress(), firstPort)) {
+                client.setSoTimeout(10_000);
                 assertTimeout(Duration.ofSeconds(10), server::stop);
-                assertTrue(client.getInputStream().read() < 0);
+                assertTrue(connectionIsClosed(client));
             }
 
             server.start();
@@ -184,6 +186,15 @@ class ControlServerTest {
             }
         } finally {
             server.stop();
+        }
+    }
+
+    private static boolean connectionIsClosed(Socket client) throws IOException {
+        try {
+            return client.getInputStream().read() < 0;
+        } catch (SocketException closedWithReset) {
+            // Linux epoll may report a server-side close as a TCP reset instead of EOF.
+            return true;
         }
     }
 
