@@ -1,8 +1,6 @@
 package wtf.nanoka.airplay.player.gstreamer;
 
 import org.freedesktop.gstreamer.ElementFactory;
-import org.freedesktop.gstreamer.Gst;
-import org.freedesktop.gstreamer.Version;
 import org.junit.jupiter.api.Assumptions;
 
 import java.util.ArrayList;
@@ -18,8 +16,7 @@ final class GstTestSupport {
 
     static void initialize(String applicationName) {
         try {
-            GstPlayerUtils.configurePaths();
-            Gst.init(Version.of(1, 10), applicationName);
+            GstPlayerUtils.initialize(applicationName);
         } catch (RuntimeException | LinkageError error) {
             failOrAbort(
                     isNativeGStreamerRequired(),

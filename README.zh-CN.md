@@ -88,6 +88,27 @@ ${user.home}/.java-airplay/application.properties
 
 默认启用安全视频路径。除非你更重视最低延迟而不是画面完整性，否则请保持 `player.gstreamer.aggressiveFrameDropping=false`。丢弃 H.264/HEVC 参考帧可能导致花屏，并持续到发送端重新连接。
 
+### GStreamer 原生日志诊断
+
+`logging.level.org.freedesktop.gstreamer` 控制 Java 绑定层日志。GStreamer 原生跟踪必须在 `Gst.init` 前配置，因此应使用 JVM 系统属性，而非 `application.properties`：
+
+| 系统属性 | 默认值 | 说明 |
+|---|---:|---|
+| `airplay.gst.debug` | `3` | 原生 `GST_DEBUG` 规则，支持 `*:4,GST_CAPS:6` 等分类规则 |
+| `airplay.gst.debug.file` | 未设置 | 可选的原生日志文件；相对路径解析到 `${user.home}/.java-airplay` 下 |
+
+未设置对应系统属性时，会沿用已有的 `GST_DEBUG` 或 `GST_DEBUG_FILE` 环境变量。文件日志默认关闭；启用后会通过 `GST_DEBUG_NO_COLOR` 关闭颜色。通过 `airplay.gst.debug.file` 指定路径时，会自动创建父目录。
+
+PowerShell 示例：
+
+```powershell
+$env:JAVA_TOOL_OPTIONS = '-Dairplay.gst.debug=*:4 -Dairplay.gst.debug.file=diagnostics/gstreamer-%p.log'
+.\start.bat
+Remove-Item Env:JAVA_TOOL_OPTIONS
+```
+
+日志会写入 `${user.home}/.java-airplay/diagnostics`，其中 `%p` 会替换为进程 ID。原生日志文件不会自动轮转，请仅在排查问题时临时启用文件日志，并手动清理旧文件。
+
 ## 播放后端能力矩阵
 
 `player.implementation` 仅选择媒体渲染器；配对、会话校验和镜像独占权均由服务端统一执行，与后端无关。

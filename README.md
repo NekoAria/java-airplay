@@ -88,6 +88,27 @@ Common settings:
 
 The safe video path is enabled by default. Keep `player.gstreamer.aggressiveFrameDropping=false` unless the lowest possible latency is more important than picture integrity. Dropping H.264/HEVC reference frames can cause block corruption until the sender reconnects.
 
+### Native GStreamer Diagnostics
+
+`logging.level.org.freedesktop.gstreamer` controls Java binding logs. Native GStreamer tracing must be configured before `Gst.init`, so use JVM system properties instead of `application.properties`:
+
+| System property | Default | Description |
+|---|---:|---|
+| `airplay.gst.debug` | `3` | Native `GST_DEBUG` specification; category rules such as `*:4,GST_CAPS:6` are supported |
+| `airplay.gst.debug.file` | unset | Optional native log file; relative paths resolve under `${user.home}/.java-airplay` |
+
+When a system property is absent, an existing `GST_DEBUG` or `GST_DEBUG_FILE` environment variable is honored. File logging is disabled by default. Enabling it disables color through `GST_DEBUG_NO_COLOR`; paths supplied through `airplay.gst.debug.file` have their parent directories created automatically.
+
+PowerShell example:
+
+```powershell
+$env:JAVA_TOOL_OPTIONS = '-Dairplay.gst.debug=*:4 -Dairplay.gst.debug.file=diagnostics/gstreamer-%p.log'
+.\start.bat
+Remove-Item Env:JAVA_TOOL_OPTIONS
+```
+
+This writes to `${user.home}/.java-airplay/diagnostics`; `%p` is replaced by the process ID. Native log files are not rotated, so enable file logging only temporarily and remove old logs manually.
+
 ## Playback Backend Matrix
 
 `player.implementation` selects only the media renderer; the server enforces pairing, session validation, and exclusive mirroring ownership for every backend.
