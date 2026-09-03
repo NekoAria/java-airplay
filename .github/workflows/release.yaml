@@ -31,23 +31,15 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - id: version
-        shell: pwsh
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
-        run: |
-          $releaseVersion = $env:REQUESTED_VERSION
-          if (!$releaseVersion) {
-            $releaseVersion = $env:GITHUB_REF_NAME -replace '^v', ''
-          }
-          "value=$releaseVersion" >> $env:GITHUB_OUTPUT
-
       - name: Build and test Windows distributions
         shell: pwsh
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if (!$env:RELEASE_VERSION) {
+            $env:RELEASE_VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
+          }
           $releaseDate = [DateTime]::UtcNow.ToString('yyMMdd')
           $gstreamerRoot = Join-Path $PWD '.runtime\gstreamer'
           $gstreamerBin = Join-Path $gstreamerRoot 'bin'
@@ -84,13 +76,13 @@ jobs:
             throw "Expected two checksum files, found $($checksumFiles.Count)."
           }
           foreach ($checksumFile in $checksumFiles) {
-            $line = (Get-Content -LiteralPath $checksumFile.FullName -Raw).Trim()
-            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') {
+            $checksum = (Get-Content -LiteralPath $checksumFile.FullName -Raw).Trim()
+            if ($checksum -notmatch '^([0-9a-f]{64})  (.+)$') {
               throw "Invalid checksum file: $($checksumFile.Name)"
             }
             $artifact = Join-Path $checksumFile.DirectoryName $Matches[2]
-            $actual = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne $Matches[1]) {
+            $actualChecksum = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualChecksum -ne $Matches[1]) {
               throw "Checksum mismatch for $artifact"
             }
           }
@@ -106,8 +98,7 @@ jobs:
           if ($portableRoots.Count -ne 1) {
             throw "Portable ZIP must contain exactly one root directory; found $($portableRoots.Count)."
           }
-          $portableRoot = $portableRoots[0]
-          & $distributionValidator -Root $portableRoot.FullName
+          & $distributionValidator -Root $portableRoots[0].FullName
 
           $installer = Get-ChildItem -LiteralPath release -Filter '*-windows-x64-setup.exe' -File |
             Select-Object -First 1
@@ -125,10 +116,10 @@ jobs:
             "/DIR=`"$installDirectory`"",
             "/LOG=`"$installLog`""
           )
-          $installation = Start-Process -FilePath $installer.FullName `
-            -ArgumentList $installArguments -Wait -PassThru
-          if ($installation.ExitCode -ne 0) {
-            throw "Silent installation failed with code $($installation.ExitCode)."
+          $installationExitCode = (Start-Process -FilePath $installer.FullName `
+            -ArgumentList $installArguments -Wait -PassThru).ExitCode
+          if ($installationExitCode -ne 0) {
+            throw "Silent installation failed with code $installationExitCode."
           }
 
           $installedLauncher = Join-Path $installDirectory 'JavaAirPlayReceiver.exe'
@@ -184,10 +175,10 @@ jobs:
             '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
             "/LOG=`"$uninstallLog`""
           )
-          $uninstallation = Start-Process -FilePath $uninstaller.FullName `
-            -ArgumentList $uninstallArguments -Wait -PassThru
-          if ($uninstallation.ExitCode -ne 0) {
-            throw "Silent uninstall failed with code $($uninstallation.ExitCode)."
+          $uninstallationExitCode = (Start-Process -FilePath $uninstaller.FullName `
+            -ArgumentList $uninstallArguments -Wait -PassThru).ExitCode
+          if ($uninstallationExitCode -ne 0) {
+            throw "Silent uninstall failed with code $uninstallationExitCode."
           }
           if (Test-Path -LiteralPath $installedLauncher) {
             throw 'Application files remain after uninstall.'
