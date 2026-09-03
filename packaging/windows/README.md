@@ -9,7 +9,7 @@ time and are not committed.
 On Windows x64 with JDK 25, Python 3, and Inno Setup 6.5 or newer installed:
 
 ```powershell
-.\gradlew.bat release -Pversion=1.0.9
+.\gradlew.bat release -Pversion=1.0.10
 ```
 
 The version supplied to Gradle is combined with the current UTC build date.

@@ -49,7 +49,7 @@ start.bat
 可执行 JAR 生成位置：
 
 ```text
-player/app/build/libs/java-airplay-server-1.0.9.jar
+player/app/build/libs/java-airplay-server-1.0.10.jar
 ```
 
 ## 桌面界面
