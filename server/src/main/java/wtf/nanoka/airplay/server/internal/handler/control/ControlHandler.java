@@ -14,8 +14,8 @@ import wtf.nanoka.airplay.server.internal.handler.session.SessionManager;
 import wtf.nanoka.airplay.server.internal.handler.session.SessionMediaCoordinator;
 import wtf.nanoka.airplay.server.internal.handler.util.PropertyListUtil;
 import io.lindstrom.m3u8.model.*;
-import io.lindstrom.m3u8.parser.MasterPlaylistParser;
 import io.lindstrom.m3u8.parser.MediaPlaylistParser;
+import io.lindstrom.m3u8.parser.MultivariantPlaylistParser;
 import io.lindstrom.m3u8.parser.ParsingMode;
 import io.lindstrom.m3u8.parser.PlaylistParserException;
 import io.netty.buffer.ByteBufInputStream;
@@ -694,7 +694,7 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
                 if (fcupResponseURL.contains("master.m3u8")) {
                     var context = session.getPlaylistRequestContexts().get(fcupResponseURL);
                     var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-                    response.content().writeCharSequence(masterPlaylistToLocalUrls(fcupResponse, playlistBaseUrl(ctx), session.getId()), StandardCharsets.UTF_8);
+                    response.content().writeCharSequence(multivariantPlaylistToLocalUrls(fcupResponse, playlistBaseUrl(ctx), session.getId()), StandardCharsets.UTF_8);
                     HttpUtil.setContentLength(response, response.content().readableBytes());
                     context.writeAndFlush(response);
                     session.getPlaylistRequestContexts().remove(fcupResponseURL);
@@ -829,11 +829,12 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
         return String.format("http://localhost:%s/playlist", port);
     }
 
-    private String masterPlaylistToLocalUrls(String masterPlaylist, String baseUrl, String sessionId) throws PlaylistParserException {
-        var parser = new MasterPlaylistParser();
-        var playlist = parser.readPlaylist(masterPlaylist);
+    private String multivariantPlaylistToLocalUrls(
+            String multivariantPlaylist, String baseUrl, String sessionId) throws PlaylistParserException {
+        var parser = new MultivariantPlaylistParser();
+        var playlist = parser.readPlaylist(multivariantPlaylist);
 
-        playlist = MasterPlaylist.builder().from(playlist)
+        playlist = MultivariantPlaylist.builder().from(playlist)
                 .alternativeRenditions(playlist.alternativeRenditions().stream()
                         .map(rendition -> AlternativeRendition.builder().from(rendition)
                                 .uri(playlistUriToLocal(rendition.uri().get(), baseUrl, sessionId)).build()).toList())

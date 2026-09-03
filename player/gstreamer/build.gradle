@@ -5,7 +5,7 @@ dependencies {
     implementation "net.java.dev.jna:jna:${rootProject.ext.jnaVersion}"
     implementation "net.java.dev.jna:jna-platform:${rootProject.ext.jnaVersion}"
     implementation "org.freedesktop.gstreamer:gst1-java-core:${rootProject.ext.gstreamerCoreVersion}"
-    implementation 'com.formdev:flatlaf:3.0'
+    implementation "com.formdev:flatlaf:${rootProject.ext.flatlafVersion}"
 }
 
 tasks.register('pureJvmTest', Test) {
