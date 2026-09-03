@@ -16,4 +16,6 @@ jobs:
 
   windows:
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: write
     uses: ./.github/workflows/release.yaml
