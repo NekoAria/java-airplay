@@ -209,6 +209,18 @@ jobs:
           path: ${{ runner.temp }}/java-airplay-*.log
           if-no-files-found: ignore
 
+      - name: Validate release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $releaseNotes = Join-Path $PWD ".github\release-notes\$env:GITHUB_REF_NAME.md"
+          if (!(Test-Path -LiteralPath $releaseNotes -PathType Leaf)) {
+            throw "Release notes were not found for $env:GITHUB_REF_NAME: $releaseNotes"
+          }
+          if ([string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $releaseNotes -Raw))) {
+            throw "Release notes are empty: $releaseNotes"
+          }
+
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
@@ -217,6 +229,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          body_path: .github/release-notes/${{ github.ref_name }}.md
           draft: false
           fail_on_unmatched_files: true
           files: |
