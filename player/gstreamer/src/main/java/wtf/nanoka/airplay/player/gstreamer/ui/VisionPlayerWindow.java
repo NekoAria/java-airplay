@@ -214,6 +214,9 @@ public final class VisionPlayerWindow implements AutoCloseable {
                 currentVideoStream = streamInfo;
                 updateVideoAspect(streamInfo);
                 updateVideoDetails(streamInfo);
+                if (detachedVideoWindow != null) {
+                    detachedVideoWindow.setStatusConnected(detailsText(streamInfo));
+                }
                 return;
             }
             connected = false;

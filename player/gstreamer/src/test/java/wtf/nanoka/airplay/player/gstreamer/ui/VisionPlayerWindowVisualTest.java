@@ -35,34 +35,15 @@ class VisionPlayerWindowVisualTest {
         preferences.put("ui-language", "ENGLISH");
 
         try {
-            var settings = new ReceiverSettings(
-                    "Visual QA Receiver", "1920", "1080", "60", "identity.pem", 32,
-                    true, true, "gstreamer", true, true, "auto", "auto", 2, false, "balanced");
-            var controller = new SettingsController() {
-                @Override
-                public Path settingsFile() {
-                    return Path.of("visual-qa.properties").toAbsolutePath();
-                }
-
-                @Override
-                public Result save(ReceiverSettings settings) {
-                    return Result.success("Saved");
-                }
-
-                @Override
-                public Result restart() {
-                    return Result.success("Restarted");
-                }
-            };
-            try (var window = new VisionPlayerWindow(new VisionPlayerWindow.Config(
-                    "Visual QA Receiver", 1920, 1080, 60, true, false, settings, controller))) {
+            String receiverName = "Visual QA Receiver";
+            try (var window = createTestWindow(receiverName, "visual-qa.properties")) {
                 window.showVideo(new VideoStreamInfo(
                         "visual", 1920, 1080, 60, VideoStreamInfo.Codec.H264));
                 SwingUtilities.invokeAndWait(() -> { });
                 JFrame frame = Arrays.stream(Window.getWindows())
                         .filter(JFrame.class::isInstance)
                         .map(JFrame.class::cast)
-                        .filter(candidate -> candidate.getTitle().equals("Java AirPlay - Visual QA Receiver"))
+                        .filter(candidate -> candidate.getTitle().equals("Java AirPlay - " + receiverName))
                         .findFirst()
                         .orElseThrow();
                 var videoImage = new BufferedImage(1180, 760, BufferedImage.TYPE_INT_ARGB);
@@ -104,6 +85,75 @@ class VisionPlayerWindowVisualTest {
             restorePreference(preferences, "theme-mode", previousTheme);
             restorePreference(preferences, "ui-language", previousLanguage);
         }
+    }
+
+    @Test
+    void refreshesDetachedWindowDetailsWhenCodecIsDetected() throws Exception {
+        Assumptions.assumeFalse(GraphicsEnvironment.isHeadless(), "Detached window requires a desktop");
+        Preferences preferences = Preferences.userNodeForPackage(ThemeManager.class);
+        String previousLanguage = preferences.get("ui-language", null);
+        preferences.put("ui-language", "ENGLISH");
+
+        try {
+            try (var window = createTestWindow("Detached QA Receiver", "detached-qa.properties")) {
+                window.showVideo(new VideoStreamInfo(
+                        "detached", 1920, 1080, 60, VideoStreamInfo.Codec.UNKNOWN));
+                window.showDetachedVideo();
+                assertDetachedDetailsContain(window, "Detecting codec");
+
+                window.showVideoFormatDetected(new VideoStreamInfo(
+                        "detached", 1920, 1080, 60, VideoStreamInfo.Codec.H264));
+                assertDetachedDetailsContain(window, "H.264");
+            }
+            SwingUtilities.invokeAndWait(() -> { });
+        } finally {
+            restorePreference(preferences, "ui-language", previousLanguage);
+        }
+    }
+
+    private static VisionPlayerWindow createTestWindow(String receiverName, String settingsFileName) {
+        var settings = new ReceiverSettings(
+                receiverName, "1920", "1080", "60", "identity.pem", 32,
+                true, true, "gstreamer", true, true, "auto", "auto", 2, false, "balanced");
+        var controller = new SettingsController() {
+            @Override
+            public Path settingsFile() {
+                return Path.of(settingsFileName).toAbsolutePath();
+            }
+
+            @Override
+            public Result save(ReceiverSettings settings) {
+                return Result.success("Saved");
+            }
+
+            @Override
+            public Result restart() {
+                return Result.success("Restarted");
+            }
+        };
+        return new VisionPlayerWindow(new VisionPlayerWindow.Config(
+                receiverName, 1920, 1080, 60, true, false, settings, controller));
+    }
+
+    private static void assertDetachedDetailsContain(
+            VisionPlayerWindow window, String expectedText) throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                assertTrue(detachedDetailsLabel(window).getText().contains(expectedText));
+            } catch (ReflectiveOperationException error) {
+                throw new IllegalStateException("Unable to inspect detached window details", error);
+            }
+        });
+    }
+
+    private static VisionPlayerWindow.VisionLabel detachedDetailsLabel(
+            VisionPlayerWindow window) throws ReflectiveOperationException {
+        Field detachedWindowField = VisionPlayerWindow.class.getDeclaredField("detachedVideoWindow");
+        detachedWindowField.setAccessible(true);
+        DetachedVideoWindow detachedWindow = (DetachedVideoWindow) detachedWindowField.get(window);
+        Field detailsLabelField = DetachedVideoWindow.class.getDeclaredField("detailsLabel");
+        detailsLabelField.setAccessible(true);
+        return (VisionPlayerWindow.VisionLabel) detailsLabelField.get(detachedWindow);
     }
 
     private static void restorePreference(Preferences preferences, String key, String value) {
