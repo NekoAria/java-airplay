@@ -158,6 +158,21 @@ release/java-airplay-<version>.<yyMMdd>-windows-x64-setup.exe.sha256
 | `player:vlc` | 备用 H.264 播放后端 |
 | `player:h264-dump` | H.264 调试输出后端 |
 
+## 上游沿革与致谢
+
+本项目衍生自 Sergei Fedorov 创建、采用 MIT 许可证的 [serezhka/java-airplay](https://github.com/serezhka/java-airplay)。面向 Windows 的开发还借鉴了 [Druadach/java-airplay](https://github.com/Druadach/java-airplay)；可查看该分支[相对于原项目的提交对比](https://github.com/Druadach/java-airplay/compare/serezhka%3Ajava-airplay%3Amain...main)。
+
+以下方面参考、改编或重新实现了该分支的工作：
+
+- RTP 音频序列号回绕、有界抖动与乱序处理，以及 GStreamer 和 Netty 缓冲区生命周期修复（[5cf34f3](https://github.com/Druadach/java-airplay/commit/5cf34f3)）。
+- FFmpeg 视频播放，以及通过 GStreamer 输出 ALAC/AAC-ELD 音频（[61ce455](https://github.com/Druadach/java-airplay/commit/61ce455)）。
+- AirPlay 会话独占接管，以及过期媒体流和迟到数据包隔离（[be16964](https://github.com/Druadach/java-airplay/commit/be16964)）。
+- 通过系统托盘控制运行时全屏模式，以及可靠的应用退出流程（[87cd8bd](https://github.com/Druadach/java-airplay/commit/87cd8bd)、[373951f](https://github.com/Druadach/java-airplay/commit/373951f)）。
+- 中英文 Windows 配置与控制（[2c2ede0](https://github.com/Druadach/java-airplay/commit/2c2ede0)）。
+- Windows CI 与自包含发行方案，包括捆绑运行时、安装程序和便携 ZIP（[dae1376](https://github.com/Druadach/java-airplay/commit/dae1376)、[0b1b610](https://github.com/Druadach/java-airplay/commit/0b1b610)）。
+
+这些实现随后已集成、重构、测试并扩展，可能与上述补丁不同。以上链接仅记录技术沿革，不表示原作者为本项目背书。著作权归相应作者和贡献者所有。
+
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)。在打包或重新分发 GStreamer 前，请审查适用的第三方许可证和重新分发条款。

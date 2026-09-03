@@ -158,6 +158,21 @@ The Windows-only release task builds a native no-console launcher, portable ZIP,
 | `player:vlc` | Alternate H.264 playback backend |
 | `player:h264-dump` | H.264 debugging output backend |
 
+## Upstream Lineage and Acknowledgements
+
+This project derives from Sergei Fedorov's MIT-licensed [serezhka/java-airplay](https://github.com/serezhka/java-airplay). Its Windows development also draws on [Druadach/java-airplay](https://github.com/Druadach/java-airplay); see the fork's [changes from the original project](https://github.com/Druadach/java-airplay/compare/serezhka%3Ajava-airplay%3Amain...main).
+
+The following areas were informed by, adapted from, or reimplemented from that fork:
+
+- RTP audio sequence rollover, bounded jitter/reordering handling, and GStreamer and Netty buffer-lifecycle fixes ([5cf34f3](https://github.com/Druadach/java-airplay/commit/5cf34f3)).
+- FFmpeg video playback with ALAC/AAC-ELD audio routed through GStreamer ([61ce455](https://github.com/Druadach/java-airplay/commit/61ce455)).
+- Exclusive AirPlay session takeover with stale-stream and late-packet isolation ([be16964](https://github.com/Druadach/java-airplay/commit/be16964)).
+- System tray controls for full-screen mode at runtime and reliable application shutdown ([87cd8bd](https://github.com/Druadach/java-airplay/commit/87cd8bd), [373951f](https://github.com/Druadach/java-airplay/commit/373951f)).
+- Bilingual Windows configuration and controls ([2c2ede0](https://github.com/Druadach/java-airplay/commit/2c2ede0)).
+- Windows CI and self-contained distribution concepts, including a bundled runtime, installer, and portable ZIP ([dae1376](https://github.com/Druadach/java-airplay/commit/dae1376), [0b1b610](https://github.com/Druadach/java-airplay/commit/0b1b610)).
+
+These implementations have since been integrated, refactored, tested, and extended, so they may differ from the referenced patches. The links document technical lineage, not endorsement. Copyright remains with the respective authors and contributors.
+
 ## License
 
 Released under the [MIT License](LICENSE). Review applicable third-party and redistribution licenses before bundling or redistributing GStreamer.
