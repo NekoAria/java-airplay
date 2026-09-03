@@ -10,6 +10,8 @@ import wtf.nanoka.airplay.server.AirPlayConfig;
 import wtf.nanoka.airplay.server.AirPlayConsumer;
 import wtf.nanoka.airplay.server.internal.handler.session.SessionManager;
 import wtf.nanoka.airplay.server.internal.handler.session.SessionMediaCoordinator;
+import io.lindstrom.m3u8.parser.MultivariantPlaylistParser;
+import io.lindstrom.m3u8.parser.PlaylistParserException;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
@@ -23,6 +25,8 @@ import io.netty.handler.codec.rtsp.RtspHeaderNames;
 import io.netty.handler.codec.rtsp.RtspMethods;
 import io.netty.handler.codec.rtsp.RtspVersions;
 import org.junit.jupiter.api.Test;
+
+import java.net.URI;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -90,6 +94,42 @@ class ControlHandlerTest {
                 "https://example.com/master.m3u8", "http://localhost:7000/playlist", "session-1"));
         assertThrows(IllegalArgumentException.class, () -> ControlHandler.playlistUriToLocal(
                 "mlhls://attacker/master.m3u8", "http://localhost:7000/playlist", "session-1"));
+    }
+
+    @Test
+    void rewritesVariantAndRenditionUris() throws PlaylistParserException {
+        var sourcePlaylist = """
+                #EXTM3U
+                #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,AUTOSELECT=YES,URI="mlhls://localhost/audio/main.m3u8?token=abc"
+                #EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID="captions",NAME="English",INSTREAM-ID="CC1"
+                #EXT-X-STREAM-INF:BANDWIDTH=1280000,AUDIO="audio",CLOSED-CAPTIONS="captions"
+                mlhls://localhost/video/main.m3u8?quality=high
+                """;
+
+        var rewrittenPlaylist = ControlHandler.multivariantPlaylistToLocalUrls(
+                sourcePlaylist, "http://localhost:7000/playlist", "session-1");
+        var playlist = new MultivariantPlaylistParser().readPlaylist(rewrittenPlaylist);
+
+        assertEquals(1, playlist.variants().size());
+        var variant = playlist.variants().getFirst();
+        assertEquals("http://localhost:7000/playlist/video/main.m3u8?quality=high&session=session-1",
+                variant.uri());
+        assertEquals("audio", variant.audio().orElseThrow());
+        var localVariantUri = URI.create(variant.uri());
+        assertEquals("mlhls://localhost/video/main.m3u8?quality=high",
+                ControlHandler.playlistPathToRemote(
+                        localVariantUri.getRawPath() + "?" + localVariantUri.getRawQuery()));
+
+        assertEquals(2, playlist.alternativeRenditions().size());
+        var audioRendition = playlist.alternativeRenditions().stream()
+                .filter(rendition -> "audio".equals(rendition.groupId()))
+                .findFirst().orElseThrow();
+        assertEquals("http://localhost:7000/playlist/audio/main.m3u8?token=abc&session=session-1",
+                audioRendition.uri().orElseThrow());
+        var captionsRendition = playlist.alternativeRenditions().stream()
+                .filter(rendition -> "captions".equals(rendition.groupId()))
+                .findFirst().orElseThrow();
+        assertTrue(captionsRendition.uri().isEmpty());
     }
 
     @Test

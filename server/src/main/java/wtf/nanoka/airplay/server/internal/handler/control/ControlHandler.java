@@ -809,19 +809,30 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
             throw new IllegalArgumentException("only mlhls://localhost playlist URIs are supported");
         }
 
-        String suffix = remoteUri.getRawPath();
-        if (remoteUri.getRawQuery() != null) {
-            suffix += "?" + remoteUri.getRawQuery();
-        }
-        var playlistUriLocal = baseUrl + suffix;
-        var queryEncoder = new QueryStringEncoder(playlistUriLocal);
+        var queryEncoder = new QueryStringEncoder(baseUrl + remoteUri.getRawPath());
+        copyQueryParametersExceptSession(new QueryStringDecoder(playlistUri), queryEncoder);
         queryEncoder.addParam("session", sessionId);
         return queryEncoder.toString();
     }
 
-    private String playlistPathToRemote(String playlistPath) {
-        var playlistUriLocal = "mlhls://localhost" + playlistPath.replace("/playlist", "");
-        return playlistUriLocal.split("\\?")[0]; // remove query
+    static String playlistPathToRemote(String playlistPath) {
+        var decoder = new QueryStringDecoder(playlistPath);
+        if (!decoder.path().startsWith("/playlist")) {
+            throw new IllegalArgumentException("local playlist path must start with /playlist");
+        }
+        var queryEncoder = new QueryStringEncoder(
+                "mlhls://localhost" + decoder.path().substring("/playlist".length()));
+        copyQueryParametersExceptSession(decoder, queryEncoder);
+        return queryEncoder.toString();
+    }
+
+    private static void copyQueryParametersExceptSession(
+            QueryStringDecoder source, QueryStringEncoder target) {
+        source.parameters().forEach((name, values) -> {
+            if (!"session".equals(name)) {
+                values.forEach(value -> target.addParam(name, value));
+            }
+        });
     }
 
     private String playlistBaseUrl(ChannelHandlerContext ctx) {
@@ -829,7 +840,7 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
         return String.format("http://localhost:%s/playlist", port);
     }
 
-    private String multivariantPlaylistToLocalUrls(
+    static String multivariantPlaylistToLocalUrls(
             String multivariantPlaylist, String baseUrl, String sessionId) throws PlaylistParserException {
         var parser = new MultivariantPlaylistParser();
         var playlist = parser.readPlaylist(multivariantPlaylist);
@@ -837,7 +848,8 @@ public class ControlHandler extends SimpleChannelInboundHandler<FullHttpMessage>
         playlist = MultivariantPlaylist.builder().from(playlist)
                 .alternativeRenditions(playlist.alternativeRenditions().stream()
                         .map(rendition -> AlternativeRendition.builder().from(rendition)
-                                .uri(playlistUriToLocal(rendition.uri().get(), baseUrl, sessionId)).build()).toList())
+                                .uri(rendition.uri().map(uri -> playlistUriToLocal(uri, baseUrl, sessionId)))
+                                .build()).toList())
                 .variants(playlist.variants().stream()
                         .map(variant -> Variant.builder().from(variant)
                                 .uri(playlistUriToLocal(variant.uri(), baseUrl, sessionId)).build()).toList())
