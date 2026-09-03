@@ -1,5 +1,8 @@
 package wtf.nanoka.airplay.server.internal.handler.control;
 
+import com.dd.plist.BinaryPropertyListWriter;
+import com.dd.plist.NSArray;
+import com.dd.plist.NSDictionary;
 import wtf.nanoka.airplay.lib.AirPlayIdentity;
 import wtf.nanoka.airplay.lib.AudioStreamInfo;
 import wtf.nanoka.airplay.lib.VideoStreamInfo;
@@ -7,14 +10,17 @@ import wtf.nanoka.airplay.server.AirPlayConfig;
 import wtf.nanoka.airplay.server.AirPlayConsumer;
 import wtf.nanoka.airplay.server.internal.handler.session.SessionManager;
 import wtf.nanoka.airplay.server.internal.handler.session.SessionMediaCoordinator;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.rtsp.RtspHeaderNames;
+import io.netty.handler.codec.rtsp.RtspMethods;
 import io.netty.handler.codec.rtsp.RtspVersions;
 import org.junit.jupiter.api.Test;
 
@@ -151,6 +157,50 @@ class ControlHandlerTest {
         assertNull(sessions.findSession("open-session"));
     }
 
+    @Test
+    void lateRtspTeardownFromRevokedControlCannotDisconnectReplacement() throws Exception {
+        var identity = AirPlayIdentity.random();
+        var config = config();
+        config.setRequirePairing(false);
+        var sessions = new DeferredCloseSessionManager(identity, 4);
+        var consumer = new RecordingVideoConsumer();
+        var coordinator = new SessionMediaCoordinator(sessions, consumer);
+        var originalChannel = new EmbeddedChannel(handler(sessions, coordinator, config, consumer, identity));
+        var replacementChannel = new EmbeddedChannel(handler(sessions, coordinator, config, consumer, identity));
+
+        try {
+            originalChannel.writeInbound(feedbackRequest("sender-a", 1));
+            assertOkAndRelease(originalChannel);
+            replacementChannel.writeInbound(feedbackRequest("sender-b", 1));
+            assertOkAndRelease(replacementChannel);
+
+            originalChannel.writeInbound(videoSetupRequest("sender-a", 2, 100));
+            assertOkAndRelease(originalChannel);
+            var originalSession = sessions.findSession("sender-a");
+            assertNotNull(originalSession);
+            assertTrue(originalSession.getVideoServer().isRunning());
+
+            replacementChannel.writeInbound(videoSetupRequest("sender-b", 2, 200));
+            assertOkAndRelease(replacementChannel);
+            var replacementSession = sessions.findSession("sender-b");
+            assertNotNull(replacementSession);
+            assertFalse(originalSession.getVideoServer().isRunning());
+            assertTrue(replacementSession.getVideoServer().isRunning());
+            assertTrue(originalChannel.isActive(),
+                    "The test keeps the revoked channel alive to deliver an in-flight request");
+
+            originalChannel.writeInbound(videoTeardownRequest("sender-a", 3, 100));
+            assertOkAndRelease(originalChannel);
+
+            assertFalse(originalSession.getVideoServer().isRunning());
+            assertTrue(replacementSession.getVideoServer().isRunning());
+            assertEquals(0, consumer.videoDisconnectCount);
+        } finally {
+            originalChannel.finishAndReleaseAll();
+            replacementChannel.finishAndReleaseAll();
+        }
+    }
+
     private static DefaultFullHttpRequest feedbackRequest(String sessionId, int sequenceNumber) {
         var request = new DefaultFullHttpRequest(
                 RtspVersions.RTSP_1_0, HttpMethod.POST, "/feedback");
@@ -160,13 +210,66 @@ class ControlHandlerTest {
         return request;
     }
 
+    private static DefaultFullHttpRequest videoSetupRequest(
+            String sessionId,
+            int sequenceNumber,
+            long streamConnectionId) throws Exception {
+        return videoStreamRequest(
+                RtspMethods.SETUP, sessionId, sequenceNumber, streamConnectionId);
+    }
+
+    private static DefaultFullHttpRequest videoTeardownRequest(
+            String sessionId,
+            int sequenceNumber,
+            long streamConnectionId) throws Exception {
+        return videoStreamRequest(
+                RtspMethods.TEARDOWN, sessionId, sequenceNumber, streamConnectionId);
+    }
+
+    private static DefaultFullHttpRequest videoStreamRequest(
+            HttpMethod method,
+            String sessionId,
+            int sequenceNumber,
+            long streamConnectionId) throws Exception {
+        var stream = new NSDictionary();
+        stream.put("type", 110);
+        stream.put("streamConnectionID", streamConnectionId);
+        var body = new NSDictionary();
+        body.put("streams", new NSArray(stream));
+        byte[] payload = BinaryPropertyListWriter.writeToArray(body);
+        var request = new DefaultFullHttpRequest(
+                RtspVersions.RTSP_1_0, method, "/stream", Unpooled.wrappedBuffer(payload));
+        request.headers().set(RtspHeaderNames.CSEQ, sequenceNumber);
+        request.headers().set("Active-Remote", sessionId);
+        request.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/x-apple-binary-plist");
+        HttpUtil.setContentLength(request, payload.length);
+        HttpUtil.setKeepAlive(request, true);
+        return request;
+    }
+
+    private static void assertOkAndRelease(EmbeddedChannel channel) {
+        FullHttpResponse response = channel.readOutbound();
+        assertNotNull(response);
+        assertEquals(HttpResponseStatus.OK, response.status());
+        response.release();
+    }
+
     private static ControlHandler handler(
             SessionManager sessions,
             AirPlayConfig config,
             AirPlayConsumer consumer,
             AirPlayIdentity identity) {
-        return new ControlHandler(
+        return handler(
                 sessions, new SessionMediaCoordinator(sessions, consumer), config, consumer, identity);
+    }
+
+    private static ControlHandler handler(
+            SessionManager sessions,
+            SessionMediaCoordinator mediaCoordinator,
+            AirPlayConfig config,
+            AirPlayConsumer consumer,
+            AirPlayIdentity identity) {
+        return new ControlHandler(sessions, mediaCoordinator, config, consumer, identity);
     }
 
     private AirPlayConfig config() {
@@ -188,5 +291,26 @@ class ControlHandlerTest {
         @Override public void onAudio(byte[] bytes) { }
         @Override public void onAudioSrcDisconnect() { }
         @Override public void onMediaPlaylistRemove() { playlistRemoved = true; }
+    }
+
+    private static final class RecordingVideoConsumer extends NoopConsumer {
+        private int videoDisconnectCount;
+
+        @Override
+        public void onVideoSrcDisconnect() {
+            videoDisconnectCount++;
+        }
+    }
+
+    private static final class DeferredCloseSessionManager extends SessionManager {
+
+        private DeferredCloseSessionManager(AirPlayIdentity identity, int maxJitterPackets) {
+            super(identity, maxJitterPackets);
+        }
+
+        @Override
+        public synchronized ControlSession openControlSession(String sessionId, Runnable ignoredCloseAction) {
+            return super.openControlSession(sessionId, () -> { });
+        }
     }
 }
