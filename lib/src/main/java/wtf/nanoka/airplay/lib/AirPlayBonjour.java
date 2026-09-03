@@ -69,32 +69,48 @@ public class AirPlayBonjour {
             }
             jmDNSList.addAll(startedServices);
         } catch (Exception e) {
-            startedServices.forEach(this::close);
+            closeAll(startedServices);
             throw e;
         }
     }
 
     public synchronized void stop() {
-        for (final JmDNS jmDNS : jmDNSList) {
-            close(jmDNS);
-        }
+        closeAll(jmDNSList);
         jmDNSList.clear();
     }
 
-    private void close(JmDNS jmDNS) {
-        if (jmDNS == null) {
+    static void closeAll(List<? extends AutoCloseable> services) {
+        List<Thread> closingThreads = new ArrayList<>(services.size());
+        Thread.Builder.OfVirtual threadBuilder = Thread.ofVirtual()
+                .name("airplay-bonjour-close-", 0);
+        for (AutoCloseable service : services) {
+            closingThreads.add(threadBuilder.start(() -> close(service)));
+        }
+
+        boolean wasInterrupted = false;
+        for (Thread thread : closingThreads) {
+            while (thread.isAlive()) {
+                try {
+                    thread.join();
+                } catch (InterruptedException ignored) {
+                    wasInterrupted = true;
+                }
+            }
+        }
+        if (wasInterrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void close(AutoCloseable service) {
+        if (service == null) {
             return;
         }
         try {
-            jmDNS.unregisterAllServices();
-        } catch (RuntimeException e) {
-            log.debug("Unable to unregister mDNS services: {}", e.getMessage());
-        } finally {
-            try {
-                jmDNS.close();
-            } catch (IOException | RuntimeException e) {
-                log.debug("Unable to close mDNS service: {}", e.getMessage());
-            }
+            // JmDNS.close() unregisters all services before releasing the socket.
+            service.close();
+        } catch (Exception error) {
+            log.debug("Unable to close mDNS service: {}", error.getMessage());
         }
     }
 
