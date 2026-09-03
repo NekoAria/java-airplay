@@ -34,6 +34,8 @@ The Windows x64 release is available as a standard installer and a portable ZIP.
 3. Open Control Center on the iPhone.
 4. Choose **Screen Mirroring**, then select the receiver name shown by the application.
 
+Release binaries are unsigned, so Windows SmartScreen may request confirmation. Both distributions include `start.bat` as a diagnostic fallback.
+
 ### From Source
 
 Source builds require Windows, JDK 25, and network access for Gradle dependencies. The startup script can prepare a project-local GStreamer runtime.

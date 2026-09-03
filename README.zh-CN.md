@@ -34,6 +34,8 @@ Windows x64 发行版同时提供标准安装程序和便携 ZIP。两者均内�
 3. 在 iPhone 上打开控制中心。
 4. 选择“屏幕镜像”，然后选择程序中显示的接收器名称。
 
+发行版二进制文件尚未签名，因此 Windows SmartScreen 可能会要求确认。两种发行形式均包含 `start.bat`，可作为诊断备用启动方式。
+
 ### 从源码运行
 
 从源码构建需要 Windows、JDK 25，以及用于下载 Gradle 依赖的网络连接。启动脚本可以准备项目内的 GStreamer runtime。

@@ -9,10 +9,7 @@ dump.h264
 **/log
 *.log
 .runtime/
-release/*.zip
-release/*.exe
-release/*.sha256
-release/*/
+/release/
 packaging/windows/*.exe
 packaging/windows/*.ico
 packaging/windows/dist/
