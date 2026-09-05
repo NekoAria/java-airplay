@@ -153,6 +153,21 @@ Windows 安装包和便携版默认使用 GStreamer。源码使用 `ffmpeg` 时�
 ./gradlew.bat :player:app:bootJar
 ```
 
+### 播放冒烟测试
+
+播放冒烟测试使用合成 H.264 视频流验证真实的 FFplay 和 GStreamer 后端，无需 AirPlay 发送端。每项测试都需要桌面环境，并会打开播放器窗口约 2～3 秒。这些测试需显式执行，不包含在 `test`、`check` 或 `build` 中。
+
+```powershell
+# 两个后端
+./gradlew.bat playbackSmokeTest
+
+# 单个后端
+./gradlew.bat ffmpegPlaybackSmokeTest
+./gradlew.bat gstreamerPlaybackSmokeTest
+```
+
+FFplay 测试要求 `PATH` 中存在 `ffplay`。GStreamer 测试优先使用 `.runtime/gstreamer`，否则使用系统 GStreamer 配置。
+
 在 Windows x64 环境中，从项目根目录构建完整发行版。打包需要 Python 3 和 Inno Setup 6.5 或更高版本：
 
 ```powershell
@@ -181,6 +196,7 @@ release/java-airplay-<version>.<yyMMdd>-windows-x64-setup.exe.sha256
 | `player:ffmpeg` | FFplay H.264/HEVC 视频与共享的 GStreamer 音频后端 |
 | `player:vlc` | 备用 H.264 播放后端 |
 | `player:h264-dump` | H.264 调试输出后端 |
+| `player:playback-test` | 使用合成 H.264 流对 FFplay 和 GStreamer 进行可选冒烟测试 |
 
 ## 上游沿革与致谢
 

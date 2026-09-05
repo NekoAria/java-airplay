@@ -153,6 +153,21 @@ This policy applies only to RTSP mirroring timing, video, and audio streams. HTT
 ./gradlew.bat :player:app:bootJar
 ```
 
+### Playback Smoke Tests
+
+Playback smoke tests exercise the real FFplay and GStreamer backends with a synthetic H.264 stream. They require no AirPlay sender, but each needs a desktop environment and opens a player window for about two to three seconds. These opt-in tests are not included in `test`, `check`, or `build`.
+
+```powershell
+# Both backends
+./gradlew.bat playbackSmokeTest
+
+# Individual backends
+./gradlew.bat ffmpegPlaybackSmokeTest
+./gradlew.bat gstreamerPlaybackSmokeTest
+```
+
+The FFplay test requires `ffplay` on `PATH`. The GStreamer test prefers `.runtime/gstreamer` and otherwise uses the system GStreamer configuration.
+
 From the repository root, build the complete Windows x64 distributions. Packaging requires Python 3 and Inno Setup 6.5 or newer.
 
 ```powershell
@@ -181,6 +196,7 @@ The Windows-only release task builds a native no-console launcher, portable ZIP,
 | `player:ffmpeg` | FFplay H.264/HEVC video with the shared GStreamer audio backend |
 | `player:vlc` | Alternate H.264 playback backend |
 | `player:h264-dump` | H.264 debugging output backend |
+| `player:playback-test` | Opt-in smoke tests for the FFplay and GStreamer backends using a synthetic H.264 stream |
 
 ## Upstream Lineage and Acknowledgements
 
