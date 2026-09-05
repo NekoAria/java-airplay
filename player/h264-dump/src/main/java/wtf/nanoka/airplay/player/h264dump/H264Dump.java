@@ -10,16 +10,20 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.Objects;
 
 @Slf4j
-public class H264Dump implements AirPlayConsumer {
+public class H264Dump implements AirPlayConsumer, AutoCloseable {
 
     private final FileChannel videoFileChannel;
 
     public H264Dump() throws IOException {
-        videoFileChannel = FileChannel.open(Paths.get("dump.h264"),
+        this(Path.of("dump.h264"));
+    }
+
+    public H264Dump(Path outputFile) throws IOException {
+        videoFileChannel = FileChannel.open(Objects.requireNonNull(outputFile, "outputFile"),
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
     }
 
@@ -56,7 +60,8 @@ public class H264Dump implements AirPlayConsumer {
     }
 
     @PreDestroy
-    public void save() throws IOException {
+    @Override
+    public void close() throws IOException {
         videoFileChannel.close();
     }
 }
