@@ -15,6 +15,11 @@ dependencies {
     playbackSmokeTestImplementation "org.freedesktop.gstreamer:gst1-java-core:${rootProject.ext.gstreamerCoreVersion}"
 }
 
+// Compile opt-in smoke tests in regular CI without running them.
+tasks.named('test') {
+    dependsOn sourceSets.playbackSmokeTest.classesTaskName
+}
+
 def registerPlaybackSmokeTest = { String taskName, String tag, String taskDescription ->
     tasks.register(taskName, Test) {
         description = taskDescription
