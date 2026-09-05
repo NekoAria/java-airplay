@@ -9,13 +9,13 @@
 
 [English](README.md) · [Issues](https://github.com/Arc-Lira/java-airplay/issues) · [Releases](https://github.com/Arc-Lira/java-airplay/releases)
 
-这是一个基于 Java 25 的 Windows 桌面 AirPlay 接收器，用于在局域网接收 iPhone 屏幕镜像。项目支持 H.264 视频和 ALAC/AAC-ELD 音频，并通过 GStreamer 或 FFmpeg 视频后端提供可选的实验性 HEVC 支持。
+这是一个基于 Java 25 的 Windows 桌面 AirPlay 接收器，可通过局域网接收 iPhone/iPad 屏幕镜像。项目支持 H.264 视频和 ALAC/AAC-ELD 音频，并通过 GStreamer 或 FFmpeg 视频后端提供可选的实验性 HEVC 支持。
 
 ## 核心能力
 
 | 能力 | 说明 |
 |---|---|
-| 屏幕镜像 | 通过传统 AirPlay 传输接收 iPhone 屏幕镜像 |
+| 屏幕镜像 | 通过传统 AirPlay 传输接收 iPhone/iPad 屏幕镜像 |
 | 音视频接收 | H.264 视频与 ALAC/AAC-ELD 音频 |
 | 实验性 HEVC | 通过 GStreamer 或 FFmpeg 视频后端提供可选 H.265 支持 |
 | 硬件解码 | 自动选择或手动选择 Windows DXGI GPU 适配器 |
@@ -31,7 +31,7 @@ Windows x64 发行版同时提供标准安装程序和便携 ZIP。两者均内�
 
 1. 运行安装 EXE，或解压便携 ZIP。
 2. 从开始菜单启动“Java AirPlay Receiver”，或在便携目录运行 `JavaAirPlayReceiver.exe`。
-3. 在 iPhone 上打开控制中心。
+3. 在 iPhone/iPad 上打开控制中心。
 4. 选择“屏幕镜像”，然后选择程序中显示的接收器名称。
 
 发行版二进制文件尚未签名，因此 Windows SmartScreen 可能会要求确认。两种发行形式均包含 `start.bat`，可作为诊断备用启动方式。
@@ -76,7 +76,7 @@ ${user.home}/.java-airplay/application.properties
 
 | 配置项 | 默认值 | 说明 |
 |---|---:|---|
-| `airplay.serverName` | `Java AirPlay` | 在 iPhone“屏幕镜像”列表中显示的名称 |
+| `airplay.serverName` | `Java AirPlay` | 在 iPhone/iPad 的“屏幕镜像”列表中显示的名称 |
 | `airplay.width` / `airplay.height` | `1920` / `1080` | 向发送端声明的显示能力，填写 `auto` 可检测实际视频流 |
 | `airplay.fps` | `60` | 向发送端声明的最大帧率，实际发送帧率由时间戳测量 |
 | `airplay.requirePairing` | `true` | 接收媒体前是否要求完成 AirPlay 配对 |
@@ -139,7 +139,7 @@ Windows 安装包和便携版默认使用 GStreamer。源码使用 `ffmpeg` 时�
 
 ## 网络与安全说明
 
-- iPhone 和接收器应连接到同一个支持组播的局域网。
+- iPhone/iPad 和接收器应连接到同一个支持组播的局域网。
 - mDNS 服务发现需要 UDP 端口 `5353` 可用。
 - 默认开启配对。请妥善保管 identity 文件，除非需要让接收器作为新设备重新配对，否则不要删除它。
 - 请仅在可信网络中使用接收器。

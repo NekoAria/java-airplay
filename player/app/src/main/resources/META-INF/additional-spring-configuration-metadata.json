@@ -4,7 +4,7 @@
       "name": "airplay.serverName",
       "type": "java.lang.String",
       "defaultValue": "Java AirPlay",
-      "description": "Receiver name shown in the iPhone Screen Mirroring list."
+      "description": "Receiver name in the Screen Mirroring list on iPhone and iPad."
     },
     {
       "name": "airplay.width",

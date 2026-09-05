@@ -9,13 +9,13 @@ If this project is useful to you, please consider giving the repository a Star o
 
 [简体中文](README.zh-CN.md) · [Issues](https://github.com/Arc-Lira/java-airplay/issues) · [Releases](https://github.com/Arc-Lira/java-airplay/releases)
 
-Java 25 desktop receiver for iPhone Screen Mirroring on a local network. It receives H.264 video and ALAC/AAC-ELD audio, with opt-in experimental HEVC through the GStreamer or FFmpeg video backend.
+Java 25 desktop receiver for iPhone and iPad screen mirroring over a local network. It receives H.264 video and ALAC/AAC-ELD audio, with opt-in experimental HEVC through the GStreamer or FFmpeg video backend.
 
 ## Highlights
 
 | Capability | Details |
 |---|---|
-| Screen mirroring | Receive iPhone screen mirroring over the legacy AirPlay transport |
+| Screen mirroring | Receive iPhone and iPad screen mirroring over the legacy AirPlay transport |
 | Video and audio | H.264 video with ALAC/AAC-ELD audio |
 | Experimental HEVC | Optional H.265 support through the GStreamer or FFmpeg video backend |
 | Hardware decoding | Automatic or selected Windows DXGI GPU adapter |
@@ -31,7 +31,7 @@ The Windows x64 release is available as a standard installer and a portable ZIP.
 
 1. Run the setup EXE, or extract the portable ZIP.
 2. Start **Java AirPlay Receiver** from the Start Menu or run `JavaAirPlayReceiver.exe` from the portable directory.
-3. Open Control Center on the iPhone.
+3. Open Control Center on the iPhone or iPad.
 4. Choose **Screen Mirroring**, then select the receiver name shown by the application.
 
 Release binaries are unsigned, so Windows SmartScreen may request confirmation. Both distributions include `start.bat` as a diagnostic fallback.
@@ -76,7 +76,7 @@ Common settings:
 
 | Property | Default | Description |
 |---|---:|---|
-| `airplay.serverName` | `Java AirPlay` | Name shown in the iPhone Screen Mirroring list |
+| `airplay.serverName` | `Java AirPlay` | Name shown in the Screen Mirroring list on iPhone and iPad |
 | `airplay.width` / `airplay.height` | `1920` / `1080` | Declared display capability; use `auto` to detect the stream |
 | `airplay.fps` | `60` | Declared maximum frame rate; the sender rate is measured from timestamps |
 | `airplay.requirePairing` | `true` | Require AirPlay pairing before accepting media |
@@ -139,7 +139,7 @@ This policy applies only to RTSP mirroring timing, video, and audio streams. HTT
 
 ## Network and Security Notes
 
-- Keep the iPhone and receiver on the same multicast-capable LAN.
+- Keep the sending iPhone or iPad and the receiver on the same multicast-capable LAN.
 - UDP port `5353` must be available for mDNS discovery.
 - Pairing is enabled by default. Keep the identity file private and do not delete it unless the receiver should pair as a new device.
 - Use the receiver only on trusted networks.
