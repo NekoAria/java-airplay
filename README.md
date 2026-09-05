@@ -143,6 +143,7 @@ This policy applies only to RTSP mirroring timing, video, and audio streams. HTT
 - UDP port `5353` must be available for mDNS discovery.
 - Pairing is enabled by default. Keep the identity file private and do not delete it unless the receiver should pair as a new device.
 - Use the receiver only on trusted networks.
+- Audio routing is controlled by iOS/iPadOS. The receiver can play AirPlay audio but cannot make the sending iPhone or iPad play it simultaneously. Simultaneous playback requires a separate audio path on the sender or a companion device.
 - This project implements legacy screen mirroring, not full AirPlay 2. Protected Apple TV content and multi-room features are out of scope.
 
 ## Build and Test
