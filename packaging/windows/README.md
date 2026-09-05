@@ -59,12 +59,16 @@ Useful individual tasks:
 ```
 
 `JavaAirPlayReceiver.exe --validate-installation` checks the staged or installed
-paths and launch arguments without starting Java. The distribution validator
-also loads every required bundled GStreamer plugin. The release workflow runs
-both checks for the portable archive and a silent installation before publishing
-assets. It also runs the full GStreamer test suite on Windows after the runtime
-has been prepared; the packaging task itself excludes that crash-prone native
-suite. For a non-CI release build, validate it in a separate invocation:
+paths and launch arguments, then starts the bundled Java application in validation
+mode and waits up to 60 seconds for its exit status. This exercises the actual
+native-launcher-to-Java command line instead of merely inspecting it. The probe
+explicitly selects the GStreamer backend and isolates temporary settings,
+identity, log, and GStreamer registry files. It also loads every required bundled
+GStreamer plugin. The release workflow runs these checks on extracted and
+installed artifacts in paths containing spaces and non-ASCII characters. After
+preparing the runtime, it runs the full Windows
+GStreamer test suite, which the packaging task excludes because it can crash.
+For a non-CI release build, run:
 
 ```powershell
 $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = (Resolve-Path .runtime\gstreamer).Path

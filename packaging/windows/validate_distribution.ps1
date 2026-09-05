@@ -43,10 +43,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Bundled Java runtime failed with exit code $LASTEXITCODE."
 }
 
+# Start Java through the launcher to exercise Win32 argument parsing.
 $launcherValidation = Start-Process -FilePath $launcher `
     -ArgumentList '--validate-installation' -Wait -PassThru
 if ($launcherValidation.ExitCode -ne 0) {
-    throw "Launcher validation failed with exit code $($launcherValidation.ExitCode)."
+    throw "Launcher or bundled Java validation failed with exit code $($launcherValidation.ExitCode)."
 }
 
 $environmentNames = @(

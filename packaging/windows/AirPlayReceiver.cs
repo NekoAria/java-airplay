@@ -12,11 +12,13 @@ namespace JavaAirPlayLauncher
     {
         private const string ValidationArgument = "--validate-installation";
         private const string JarFileName = "java-airplay-server.jar";
+        private const int ValidationTimeoutMilliseconds = 60000;
 
         [STAThread]
         private static int Main(string[] args)
         {
             bool validationOnly = ContainsArgument(args, ValidationArgument);
+            string validationFileBasePath = null;
             try
             {
                 string appDirectory = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory);
@@ -30,8 +32,15 @@ namespace JavaAirPlayLauncher
                     return 2;
                 }
 
-                ProcessStartInfo startInfo = CreateStartInfo(appDirectory, args);
-                validationError = ValidateStartInfo(appDirectory, startInfo);
+                if (validationOnly)
+                {
+                    validationFileBasePath = Path.Combine(
+                        Path.GetTempPath(),
+                        "Java AirPlay Validation " + Guid.NewGuid().ToString("N"));
+                }
+                ProcessStartInfo startInfo = CreateStartInfo(
+                    appDirectory, args, validationFileBasePath);
+                validationError = ValidateStartInfo(appDirectory, startInfo, validationFileBasePath);
                 if (validationError != null)
                 {
                     if (!validationOnly)
@@ -42,7 +51,7 @@ namespace JavaAirPlayLauncher
                 }
                 if (validationOnly)
                 {
-                    return 0;
+                    return RunJavaValidation(startInfo);
                 }
 
                 Process process = Process.Start(startInfo);
@@ -62,9 +71,22 @@ namespace JavaAirPlayLauncher
                 }
                 return 5;
             }
+            finally
+            {
+                if (validationFileBasePath != null)
+                {
+                    DeleteFile(validationFileBasePath + ".properties");
+                    DeleteFile(validationFileBasePath + ".key");
+                    DeleteFile(validationFileBasePath + ".log");
+                    DeleteFile(validationFileBasePath + ".gst-registry.bin");
+                }
+            }
         }
 
-        private static ProcessStartInfo CreateStartInfo(string appDirectory, string[] args)
+        private static ProcessStartInfo CreateStartInfo(
+            string appDirectory,
+            string[] args,
+            string validationFileBasePath)
         {
             string runtimeBin = Path.Combine(appDirectory, "runtime", "bin");
             string javaExecutable = Path.Combine(runtimeBin, "javaw.exe");
@@ -79,13 +101,28 @@ namespace JavaAirPlayLauncher
             {
                 "--enable-native-access=ALL-UNNAMED",
                 "-Dfile.encoding=UTF-8",
-                "-Dgstreamer.path=" + gstreamerBin,
-                "-jar",
-                jarPath
+                "-Dgstreamer.path=" + gstreamerBin
             };
-            foreach (string argument in args)
+            if (validationFileBasePath != null)
             {
-                if (!String.Equals(argument, ValidationArgument, StringComparison.OrdinalIgnoreCase))
+                javaArguments.Add(
+                    "-Djava-airplay.settings-file=" + validationFileBasePath + ".properties");
+            }
+            javaArguments.Add("-jar");
+            javaArguments.Add(jarPath);
+
+            if (validationFileBasePath != null)
+            {
+                javaArguments.Add("--java-airplay.validation=true");
+                javaArguments.Add("--player.implementation=gstreamer");
+                javaArguments.Add("--player.gstreamer.swing=false");
+                javaArguments.Add("--player.tray.enabled=false");
+                javaArguments.Add("--airplay.identityFile=" + validationFileBasePath + ".key");
+                javaArguments.Add("--logging.file.name=" + validationFileBasePath + ".log");
+            }
+            else
+            {
+                foreach (string argument in args)
                 {
                     javaArguments.Add(argument);
                 }
@@ -111,6 +148,11 @@ namespace JavaAirPlayLauncher
             startInfo.EnvironmentVariables["GST_PLUGIN_SYSTEM_PATH_1_0"] = gstreamerPlugins;
             startInfo.EnvironmentVariables["GST_PLUGIN_SCANNER"] = gstreamerScanner;
             startInfo.EnvironmentVariables["GST_PLUGIN_SCANNER_1_0"] = gstreamerScanner;
+            if (validationFileBasePath != null)
+            {
+                startInfo.EnvironmentVariables["GST_REGISTRY_1_0"] =
+                    validationFileBasePath + ".gst-registry.bin";
+            }
             return startInfo;
         }
 
@@ -149,7 +191,10 @@ namespace JavaAirPlayLauncher
             return null;
         }
 
-        private static string ValidateStartInfo(string appDirectory, ProcessStartInfo startInfo)
+        private static string ValidateStartInfo(
+            string appDirectory,
+            ProcessStartInfo startInfo,
+            string validationFileBasePath)
         {
             string runtimeBin = Path.Combine(appDirectory, "runtime", "bin");
             string gstreamerRoot = Path.Combine(appDirectory, ".runtime", "gstreamer");
@@ -171,6 +216,33 @@ namespace JavaAirPlayLauncher
             if (!hasRequiredArguments)
             {
                 return "Launcher validation failed: required JVM arguments are missing.";
+            }
+            if (validationFileBasePath != null)
+            {
+                foreach (string requiredArgument in new[]
+                {
+                    "-Djava-airplay.settings-file=",
+                    "--java-airplay.validation=true",
+                    "--player.implementation=gstreamer",
+                    "--player.gstreamer.swing=false",
+                    "--player.tray.enabled=false",
+                    "--airplay.identityFile=",
+                    "--logging.file.name="
+                })
+                {
+                    if (startInfo.Arguments.IndexOf(requiredArgument, StringComparison.Ordinal) < 0)
+                    {
+                        return "Launcher validation failed: Java startup probe arguments are missing.";
+                    }
+                }
+
+                if (!String.Equals(
+                        startInfo.EnvironmentVariables["GST_REGISTRY_1_0"],
+                        validationFileBasePath + ".gst-registry.bin",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return "Launcher validation failed: isolated GStreamer registry is missing.";
+                }
             }
             string processPath = startInfo.EnvironmentVariables["PATH"] ?? String.Empty;
             string requiredPathPrefix = runtimeBin + ";" + gstreamerBin;
@@ -196,6 +268,32 @@ namespace JavaAirPlayLauncher
                 return "Launcher validation failed: bundled GStreamer scanner is missing from the environment.";
             }
             return null;
+        }
+
+        private static int RunJavaValidation(ProcessStartInfo startInfo)
+        {
+            using (Process process = Process.Start(startInfo))
+            {
+                if (process == null)
+                {
+                    return 4;
+                }
+                if (process.WaitForExit(ValidationTimeoutMilliseconds))
+                {
+                    return process.ExitCode;
+                }
+
+                try
+                {
+                    process.Kill();
+                    process.WaitForExit(5000);
+                }
+                catch
+                {
+                    // Best effort cleanup after a validation timeout.
+                }
+                return 6;
+            }
         }
 
         private static string BuildCommandLine(IEnumerable<string> arguments)
@@ -276,6 +374,18 @@ namespace JavaAirPlayLauncher
                 path.Append(value);
             }
             return path.ToString();
+        }
+
+        private static void DeleteFile(string path)
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+                // Validation cleanup must not hide the Java process result.
+            }
         }
 
         private static bool ContainsArgument(IEnumerable<string> arguments, string expected)

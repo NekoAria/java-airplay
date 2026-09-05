@@ -92,7 +92,7 @@ jobs:
           if (!$portableZip) {
             throw 'Portable ZIP was not generated.'
           }
-          $portableExtract = Join-Path $env:RUNNER_TEMP 'java-airplay-portable'
+          $portableExtract = Join-Path $env:RUNNER_TEMP 'Java AirPlay Portable 路径测试'
           Expand-Archive -LiteralPath $portableZip.FullName -DestinationPath $portableExtract
           $portableRoots = @(Get-ChildItem -LiteralPath $portableExtract -Directory)
           if ($portableRoots.Count -ne 1) {
@@ -105,7 +105,7 @@ jobs:
           if (!$installer) {
             throw 'Windows installer was not generated.'
           }
-          $installDirectory = Join-Path $env:RUNNER_TEMP 'java-airplay-installed'
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'Java AirPlay Installed 路径测试'
           if (Test-Path -LiteralPath $installDirectory) {
             throw "Temporary installation directory already exists: $installDirectory"
           }
