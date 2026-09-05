@@ -36,6 +36,8 @@ The Windows x64 release is available as a standard installer and a portable ZIP.
 
 Release binaries are unsigned, so Windows SmartScreen may request confirmation. Both distributions include `start.bat` as a diagnostic fallback.
 
+Due to an upstream OpenJDK limitation on Windows, custom installation and portable paths may contain only characters supported by the active system locale. If startup reports `could not find java.dll`, move or extract the distribution to an ASCII-only path. The installer's default path is unaffected.
+
 ### From Source
 
 Source builds require Windows, JDK 25, and network access for Gradle dependencies. The startup script can prepare a project-local GStreamer runtime.

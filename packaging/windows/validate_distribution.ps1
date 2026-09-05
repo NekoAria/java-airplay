@@ -7,6 +7,40 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Invoke-NativeProbe([string]$Executable, [string[]]$CommandArguments) {
+    # Process redirection avoids Windows PowerShell 5.1 converting native stderr
+    # into noisy error records. Probe arguments are fixed tokens without spaces.
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Executable
+    $startInfo.Arguments = $CommandArguments -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (!$process.Start()) {
+            throw "Windows did not return a process handle for '$Executable'."
+        }
+        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
+        $standardErrorTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $output = @(
+            $standardOutputTask.Result.Trim()
+            $standardErrorTask.Result.Trim()
+        ) | Where-Object { $_ }
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = ($output -join [Environment]::NewLine)
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
 $distributionRoot = (Resolve-Path -LiteralPath $Root).Path
 $launcher = Join-Path $distributionRoot 'JavaAirPlayReceiver.exe'
 $javaExecutable = Join-Path $distributionRoot 'runtime\bin\java.exe'
@@ -38,9 +72,16 @@ if (!(Test-Path -LiteralPath $gstreamerPlugins -PathType Container)) {
     throw "Distribution is missing the GStreamer plugin directory: $gstreamerPlugins"
 }
 
-& $javaExecutable --version *> $null
-if ($LASTEXITCODE -ne 0) {
-    throw "Bundled Java runtime failed with exit code $LASTEXITCODE."
+Write-Host "Testing bundled Java runtime at: $javaExecutable"
+$javaVersionProbe = Invoke-NativeProbe $javaExecutable '--version'
+if ($javaVersionProbe.Output) {
+    Write-Host $javaVersionProbe.Output
+}
+if ($javaVersionProbe.ExitCode -ne 0) {
+    Write-Host 'Java binary details:'
+    Get-Item -LiteralPath $javaExecutable |
+        Format-List FullName, Length, CreationTimeUtc, LastWriteTimeUtc
+    throw "Bundled Java runtime failed with exit code $($javaVersionProbe.ExitCode). Output: $($javaVersionProbe.Output)"
 }
 
 # Start Java through the launcher to exercise Win32 argument parsing.
@@ -90,9 +131,9 @@ try {
         'autoaudiosink'
     )
     foreach ($plugin in $requiredPlugins) {
-        & $gstreamerInspect $plugin *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Bundled GStreamer runtime cannot load required plugin '$plugin'."
+        $pluginProbe = Invoke-NativeProbe $gstreamerInspect $plugin
+        if ($pluginProbe.ExitCode -ne 0) {
+            throw "Bundled GStreamer runtime cannot load required plugin '$plugin'. Output: $($pluginProbe.Output)"
         }
     }
 } finally {

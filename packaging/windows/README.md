@@ -65,7 +65,10 @@ native-launcher-to-Java command line instead of merely inspecting it. The probe
 explicitly selects the GStreamer backend and isolates temporary settings,
 identity, log, and GStreamer registry files. It also loads every required bundled
 GStreamer plugin. The release workflow runs these checks on extracted and
-installed artifacts in paths containing spaces and non-ASCII characters. After
+installed artifacts in paths containing spaces and non-ASCII characters supported
+by the runner's active Windows code page. OpenJDK cannot locate its own runtime
+from paths containing unsupported characters, so the validator preserves Java's
+diagnostic output for this failure. After
 preparing the runtime, it runs the full Windows
 GStreamer test suite, which the packaging task excludes because it can crash.
 For a non-CI release build, run:

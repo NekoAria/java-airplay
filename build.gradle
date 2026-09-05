@@ -226,10 +226,10 @@ tasks.register('validateWindowsPackagingSources') {
                 || !releaseWorkflow.contains('"/DIR=`"$installDirectory`""')) {
             throw new GradleException('Windows installer validation must use an explicit temporary directory.')
         }
-        if (!releaseWorkflow.contains("'Java AirPlay Portable 路径测试'")
-                || !releaseWorkflow.contains("'Java AirPlay Installed 路径测试'")) {
+        if (!releaseWorkflow.contains("'Java AirPlay Portable café'")
+                || !releaseWorkflow.contains("'Java AirPlay Installed café'")) {
             throw new GradleException(
-                    'Windows distribution validation paths must cover spaces and non-ASCII characters.')
+                    'Windows distribution validation must exercise paths with spaces and code-page-compatible non-ASCII characters.')
         }
         [
                 '#ifndef AppVersion',

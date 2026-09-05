@@ -36,6 +36,8 @@ Windows x64 发行版同时提供标准安装程序和便携 ZIP。两者均内�
 
 发行版二进制文件尚未签名，因此 Windows SmartScreen 可能会要求确认。两种发行形式均包含 `start.bat`，可作为诊断备用启动方式。
 
+受 Windows 版 OpenJDK 的上游限制，自定义安装路径和便携版路径只能包含当前系统区域设置支持的字符。若启动时报告 `could not find java.dll`，请将发行版移动或解压到仅含 ASCII 字符的路径。安装程序的默认路径不受影响。
+
 ### 从源码运行
 
 从源码构建需要 Windows、JDK 25，以及用于下载 Gradle 依赖的网络连接。启动脚本可以准备项目内的 GStreamer runtime。
