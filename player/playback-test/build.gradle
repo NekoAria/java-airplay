@@ -1,0 +1,82 @@
+sourceSets {
+    playbackSmokeTest
+}
+
+configurations {
+    playbackSmokeTestImplementation.extendsFrom testImplementation
+    playbackSmokeTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+    playbackSmokeTestImplementation project(':lib')
+    playbackSmokeTestImplementation project(':server')
+    playbackSmokeTestImplementation project(':player:ffmpeg')
+    playbackSmokeTestImplementation project(':player:gstreamer')
+    playbackSmokeTestImplementation "org.freedesktop.gstreamer:gst1-java-core:${rootProject.ext.gstreamerCoreVersion}"
+}
+
+def registerPlaybackSmokeTest = { String taskName, String tag, String taskDescription ->
+    tasks.register(taskName, Test) {
+        description = taskDescription
+        group = 'verification'
+        testClassesDirs = sourceSets.playbackSmokeTest.output.classesDirs
+        classpath = sourceSets.playbackSmokeTest.runtimeClasspath
+        useJUnitPlatform {
+            includeTags tag
+        }
+        failFast = true
+        outputs.upToDateWhen { false }
+    }
+}
+
+def ffmpegPlaybackSmokeTest = registerPlaybackSmokeTest(
+        'ffmpegPlaybackSmokeTest',
+        'ffmpeg-playback',
+        'Runs the opt-in FFplay playback smoke test with a synthetic H.264 stream.')
+
+def gstreamerPlaybackSmokeTest = registerPlaybackSmokeTest(
+        'gstreamerPlaybackSmokeTest',
+        'gstreamer-playback',
+        'Runs the opt-in GStreamer playback smoke test with a synthetic H.264 stream.')
+
+def localGStreamerRuntime = rootProject.layout.projectDirectory.dir('.runtime/gstreamer')
+def gstreamerRegistry = layout.buildDirectory.file('tmp/gstreamer-playback-smoke/registry.bin')
+def inheritedPath = providers.environmentVariable('PATH').getOrElse('')
+
+gstreamerPlaybackSmokeTest.configure {
+    mustRunAfter ffmpegPlaybackSmokeTest
+
+    doFirst {
+        File runtimeRoot = localGStreamerRuntime.asFile
+        File runtimeBin = new File(runtimeRoot, 'bin')
+        File gstInspect = new File(runtimeBin, 'gst-inspect-1.0.exe')
+        if (!gstInspect.isFile()) {
+            return
+        }
+
+        File pluginDirectory = new File(runtimeRoot, 'lib/gstreamer-1.0')
+        File pluginScanner = new File(runtimeRoot, 'libexec/gstreamer-1.0/gst-plugin-scanner.exe')
+        File registryFile = gstreamerRegistry.get().asFile
+        registryFile.parentFile.mkdirs()
+
+        environment 'PATH', inheritedPath.isEmpty()
+                ? runtimeBin.absolutePath
+                : runtimeBin.absolutePath + File.pathSeparator + inheritedPath
+        environment 'GST_PLUGIN_PATH', pluginDirectory.absolutePath
+        environment 'GST_PLUGIN_PATH_1_0', pluginDirectory.absolutePath
+        environment 'GST_PLUGIN_SYSTEM_PATH', pluginDirectory.absolutePath
+        environment 'GST_PLUGIN_SYSTEM_PATH_1_0', pluginDirectory.absolutePath
+        environment 'GST_REGISTRY_1_0', registryFile.absolutePath
+        if (pluginScanner.isFile()) {
+            environment 'GST_PLUGIN_SCANNER', pluginScanner.absolutePath
+            environment 'GST_PLUGIN_SCANNER_1_0', pluginScanner.absolutePath
+        }
+        jvmArgs "-Dgstreamer.path=${runtimeBin.absolutePath}"
+    }
+}
+
+tasks.register('playbackSmokeTest') {
+    description = 'Runs every opt-in real-player playback smoke test.'
+    group = 'verification'
+    dependsOn ffmpegPlaybackSmokeTest, gstreamerPlaybackSmokeTest
+}
